@@ -18,9 +18,10 @@ async def run() -> None:
     if settings.dry_run:
         logger.warning("Running in DRY RUN mode - no real orders will be placed")
 
+    # Connected even in dry-run: price lookups are read-only and needed to
+    # simulate whether a signal would market-fill or wait as a pending order.
     broker = MetaApiExecutionClient(settings.metaapi_token, settings.metaapi_account_id)
-    if not settings.dry_run:
-        await broker.connect()
+    await broker.connect()
 
     parser = SignalParser(allowed_symbol=settings.symbol)
     engine = TradingEngine(settings, parser, broker)
@@ -35,8 +36,7 @@ async def run() -> None:
     try:
         await listener.start(engine.handle_message)
     finally:
-        if not settings.dry_run:
-            await broker.disconnect()
+        await broker.disconnect()
 
 
 def main() -> None:

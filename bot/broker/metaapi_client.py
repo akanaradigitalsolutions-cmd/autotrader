@@ -1,4 +1,5 @@
 import logging
+from typing import Optional
 
 from metaapi_cloud_sdk import MetaApi
 
@@ -44,7 +45,13 @@ class MetaApiExecutionClient(ExecutionClient):
         positions = await self._connection.get_positions()
         return sum(1 for p in positions if p.get("symbol") == symbol)
 
-    async def place_order(self, signal: TradeSignal, volume: float) -> ExecutionResult:
+    async def get_current_price(self, symbol: str) -> tuple[float, float]:
+        price = await self._connection.get_symbol_price(symbol)
+        return float(price["bid"]), float(price["ask"])
+
+    async def place_order(
+        self, signal: TradeSignal, volume: float, entry_price: Optional[float] = None
+    ) -> ExecutionResult:
         try:
             options = {}
             if signal.stop_loss is not None:
@@ -52,14 +59,27 @@ class MetaApiExecutionClient(ExecutionClient):
             if signal.primary_take_profit is not None:
                 options["takeProfit"] = signal.primary_take_profit
 
-            if signal.direction == Direction.BUY:
-                result = await self._connection.create_market_buy_order(
-                    signal.symbol, volume, **options
-                )
+            if entry_price is None:
+                if signal.direction == Direction.BUY:
+                    result = await self._connection.create_market_buy_order(
+                        signal.symbol, volume, **options
+                    )
+                else:
+                    result = await self._connection.create_market_sell_order(
+                        signal.symbol, volume, **options
+                    )
             else:
-                result = await self._connection.create_market_sell_order(
-                    signal.symbol, volume, **options
-                )
+                # Entry zone hasn't been reached yet - place a pending limit
+                # order that fills once price gets there instead of chasing
+                # the market now.
+                if signal.direction == Direction.BUY:
+                    result = await self._connection.create_limit_buy_order(
+                        signal.symbol, volume, entry_price, **options
+                    )
+                else:
+                    result = await self._connection.create_limit_sell_order(
+                        signal.symbol, volume, entry_price, **options
+                    )
 
             order_id = str(result.get("orderId") or result.get("positionId") or "")
             return ExecutionResult(

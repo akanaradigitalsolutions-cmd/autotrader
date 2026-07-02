@@ -56,7 +56,8 @@ class SignalParser:
         direction_raw = direction_match.group(1).upper()
         direction = Direction.BUY if direction_raw in ("BUY", "LONG") else Direction.SELL
 
-        entry = self._parse_entry(text, direction_match)
+        entry_low, entry_high = self._parse_entry_zone(text, direction_match)
+        entry = round((entry_low + entry_high) / 2, 2) if entry_low is not None else None
 
         stop_loss = None
         sl_match = SL_PATTERN.search(text)
@@ -72,18 +73,22 @@ class SignalParser:
             symbol=symbol,
             direction=direction,
             entry=entry,
+            entry_low=entry_low,
+            entry_high=entry_high,
             stop_loss=stop_loss,
             take_profits=take_profits,
             raw_text=text,
         )
 
     @staticmethod
-    def _parse_entry(text: str, direction_match: re.Match) -> Optional[float]:
+    def _parse_entry_zone(
+        text: str, direction_match: re.Match
+    ) -> tuple[Optional[float], Optional[float]]:
         entry_match = ENTRY_PATTERN.search(text)
         if entry_match:
             low = float(entry_match.group(1))
             high = float(entry_match.group(2)) if entry_match.group(2) else low
-            return round((low + high) / 2, 2)
+            return (low, high) if low <= high else (high, low)
 
         # No "Entry:" keyword - look for a bare number/range on the direction's
         # own line, e.g. "gold sell 4455-60" (shorthand: "60" means "...60").
@@ -96,15 +101,15 @@ class SignalParser:
                 cutoff = min(cutoff, keyword_match.start())
         inline_match = INLINE_RANGE_PATTERN.search(line[:cutoff])
         if not inline_match:
-            return None
+            return None, None
 
         low = float(inline_match.group(1))
         high_raw = inline_match.group(2)
         if not high_raw:
-            return low
+            return low, low
         if "." in high_raw or len(high_raw) >= len(str(int(low))):
             high = float(high_raw)
         else:
             low_str = str(int(low))
             high = float(low_str[: -len(high_raw)] + high_raw)
-        return round((low + high) / 2, 2)
+        return (low, high) if low <= high else (high, low)

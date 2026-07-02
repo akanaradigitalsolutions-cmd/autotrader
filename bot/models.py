@@ -12,7 +12,9 @@ class Direction(str, Enum):
 class TradeSignal(BaseModel):
     symbol: str
     direction: Direction
-    entry: Optional[float] = None  # None means "execute at market"
+    entry: Optional[float] = None  # midpoint of the entry zone, for display/logging
+    entry_low: Optional[float] = None
+    entry_high: Optional[float] = None
     stop_loss: Optional[float] = None
     take_profits: list[float] = []
     raw_text: str
