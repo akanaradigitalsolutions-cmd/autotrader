@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     symbol: str = "XAUUSD"
     lot_size: float = 0.01
     max_lot_size: float = 1.0
+    # How many separate trades to open per signal, each using one of the
+    # signal's take-profit levels (same entry/SL, different TP). Capped at
+    # however many TP levels the signal actually contains.
+    trades_per_signal: int = 1
 
     # Safety
     dry_run: bool = True

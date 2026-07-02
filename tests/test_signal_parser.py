@@ -65,3 +65,19 @@ def test_handles_missing_entry_as_market_order():
 
     assert signal is not None
     assert signal.entry is None
+
+
+def test_parses_real_world_lowercase_shorthand_signal():
+    text = """gold sell 4455-60
+sl 4468
+tp 4451
+tp 4444
+tp 4390"""
+    signal = make_parser().parse(text)
+
+    assert signal is not None
+    assert signal.symbol == "XAUUSD"
+    assert signal.direction == Direction.SELL
+    assert signal.entry == 4457.5
+    assert signal.stop_loss == 4468
+    assert signal.take_profits == [4451, 4444, 4390]

@@ -2,7 +2,7 @@ import logging
 
 from bot.broker.base import ExecutionClient
 from bot.config import Settings
-from bot.risk import resolve_lot_size
+from bot.risk import resolve_lot_size, take_profits_for_trades
 from bot.signal_parser import SignalParser
 
 logger = logging.getLogger(__name__)
@@ -32,20 +32,25 @@ class TradingEngine:
         )
 
         volume = resolve_lot_size(self.settings)
+        trade_tps = take_profits_for_trades(signal.take_profits, self.settings.trades_per_signal)
 
         if self.settings.dry_run:
-            logger.info(
-                "[DRY RUN] Would place %s %s lots=%.2f sl=%s tp=%s",
-                signal.direction,
-                signal.symbol,
-                volume,
-                signal.stop_loss,
-                signal.primary_take_profit,
-            )
+            for i, tp in enumerate(trade_tps, start=1):
+                logger.info(
+                    "[DRY RUN] Trade %d/%d: %s %s lots=%.2f sl=%s tp=%s",
+                    i,
+                    len(trade_tps),
+                    signal.direction,
+                    signal.symbol,
+                    volume,
+                    signal.stop_loss,
+                    tp,
+                )
             return
 
         open_positions = await self.broker.count_open_positions(signal.symbol)
-        if open_positions >= self.settings.max_open_positions:
+        available_slots = self.settings.max_open_positions - open_positions
+        if available_slots <= 0:
             logger.warning(
                 "Skipping signal: already %d open position(s) on %s (limit %d)",
                 open_positions,
@@ -54,8 +59,21 @@ class TradingEngine:
             )
             return
 
-        result = await self.broker.place_order(signal, volume)
-        if result.success:
-            logger.info("Order executed: id=%s", result.order_id)
-        else:
-            logger.error("Order failed: %s", result.message)
+        trades_to_place = trade_tps[:available_slots]
+        if len(trades_to_place) < len(trade_tps):
+            logger.warning(
+                "Only placing %d/%d trades: max open positions limit (%d) reached",
+                len(trades_to_place),
+                len(trade_tps),
+                self.settings.max_open_positions,
+            )
+
+        for i, tp in enumerate(trades_to_place, start=1):
+            trade_signal = signal.model_copy(
+                update={"take_profits": [tp] if tp is not None else []}
+            )
+            result = await self.broker.place_order(trade_signal, volume)
+            if result.success:
+                logger.info("Trade %d/%d executed: id=%s tp=%s", i, len(trades_to_place), result.order_id, tp)
+            else:
+                logger.error("Trade %d/%d failed: %s", i, len(trades_to_place), result.message)
