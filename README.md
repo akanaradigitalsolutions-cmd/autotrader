@@ -45,18 +45,37 @@ self-hosted MT5 terminal + EA bridge on a Windows VPS. Everything else
 2. `pip install -r requirements.txt`
 3. `cp .env.example .env` and fill in:
    - `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` from https://my.telegram.org
-   - `TELEGRAM_CHANNEL` - the `@username` of the signal channel
    - `METAAPI_TOKEN` / `METAAPI_ACCOUNT_ID` - from a MetaApi.cloud account
      with your MT5 login (start with a **demo account**) linked
-4. Leave `DRY_RUN=true` and run:
+   - leave `TELEGRAM_CHANNEL` blank for now - see step 4
+
+4. **First-time Telegram login + finding your channel's id.** If the
+   channel has a stylized display name (e.g. "𝐕𝐈𝐏 𝐒𝐈𝐆𝐍𝐀𝐋𝐒🔰") you often
+   can't tell its real `@username` from the app, and some channels don't
+   have a public username at all - so run the discovery helper instead of
+   guessing:
+   ```
+   python scripts/list_channels.py
+   ```
+   This is also where the **first-time login** happens: it will prompt in
+   the terminal for your phone number, then a login code. Telegram sends
+   the code as a message from the official "Telegram" account inside the
+   app itself (Settings, or just check your chat list) - not always SMS.
+   If you have two-step verification (cloud password) enabled, it'll ask
+   for that too. Once logged in, it's cached in a local `autotrader.session`
+   file next to the code, so you won't be prompted again.
+
+   The script then prints every channel/group you're in with its numeric
+   chat id and username (if public). Find the row matching the signal
+   channel and copy whichever it shows - either `@username` or the numeric
+   id both work as `TELEGRAM_CHANNEL` in `.env`.
+5. Leave `DRY_RUN=true` and run:
    ```
    python -m bot.main
    ```
-   First run will prompt for your Telegram phone number + login code (one
-   time, then it's cached in a local `.session` file). Watch the logs -
-   every real signal from the channel will be parsed and logged as
-   `[DRY RUN] Would place ...` without touching your MT5 account.
-5. Once parsing looks correct against real traffic, set `DRY_RUN=false` to
+   Watch the logs - every real signal from the channel will be parsed and
+   logged as `[DRY RUN] Would place ...` without touching your MT5 account.
+6. Once parsing looks correct against real traffic, set `DRY_RUN=false` to
    go live. Start on a demo MT5 account before ever pointing this at a
    funded one.
 

@@ -21,7 +21,14 @@ class TelegramListener:
 
     def __init__(self, api_id: int, api_hash: str, session_name: str, channel: str):
         self._client = TelegramClient(session_name, api_id, api_hash)
-        self._channel = channel
+        self._channel = self._resolve_channel(channel)
+
+    @staticmethod
+    def _resolve_channel(channel: str) -> str | int:
+        # A numeric chat id (e.g. "-1001234567890") must be passed as an int,
+        # not a string, or Telethon will treat it as a username lookup.
+        stripped = channel.strip()
+        return int(stripped) if stripped.lstrip("-").isdigit() else stripped
 
     async def start(self, on_message: MessageHandler) -> None:
         await self._client.start()
