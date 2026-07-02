@@ -21,7 +21,16 @@ async def run() -> None:
     # Connected even in dry-run: price lookups are read-only and needed to
     # simulate whether a signal would market-fill or wait as a pending order.
     broker = MetaApiExecutionClient(settings.metaapi_token, settings.metaapi_account_id)
-    await broker.connect()
+    try:
+        await broker.connect()
+    except Exception as exc:  # noqa: BLE001 - this is the top-level startup boundary
+        logger.error("Could not connect to MetaApi: %s", exc)
+        logger.error(
+            "Check METAAPI_TOKEN/METAAPI_ACCOUNT_ID in .env, and that your "
+            "MetaApi.cloud account has billing set up (Billing tab at "
+            "https://app.metaapi.cloud) - deploying an account requires it."
+        )
+        return
 
     parser = SignalParser(allowed_symbol=settings.symbol)
     engine = TradingEngine(settings, parser, broker)
