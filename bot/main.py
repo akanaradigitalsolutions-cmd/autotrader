@@ -15,8 +15,13 @@ async def run() -> None:
     settings = load_settings()
     setup_logging(settings)
 
-    if settings.dry_run:
-        logger.warning("Running in DRY RUN mode - no real orders will be placed")
+    mode = "DRY RUN (no real orders)" if settings.dry_run else "LIVE - REAL MONEY"
+    logger.warning("=" * 60)
+    logger.warning("MODE: %s", mode)
+    logger.warning("Account: %s | Symbol: %s | Lot size: %s | Trades/signal: %s",
+                    settings.metaapi_account_id, settings.symbol, settings.lot_size,
+                    settings.trades_per_signal)
+    logger.warning("=" * 60)
 
     # Connected even in dry-run: price lookups are read-only and needed to
     # simulate whether a signal would market-fill or wait as a pending order.
