@@ -54,7 +54,7 @@ class TradingEngine:
                 )
             return
 
-        open_positions = await self.broker.count_open_positions(signal.symbol)
+        open_positions = await self.broker.count_open_positions(self.settings.broker_symbol)
         available_slots = self.settings.max_open_positions - open_positions
         if available_slots <= 0:
             logger.warning(
@@ -76,7 +76,10 @@ class TradingEngine:
 
         for i, tp in enumerate(trades_to_place, start=1):
             trade_signal = signal.model_copy(
-                update={"take_profits": [tp] if tp is not None else []}
+                update={
+                    "take_profits": [tp] if tp is not None else [],
+                    "symbol": self.settings.broker_symbol,
+                }
             )
             result = await self.broker.place_order(trade_signal, volume, entry_price)
             if result.success:
@@ -102,7 +105,7 @@ class TradingEngine:
         if signal.entry_low is None or signal.entry_high is None:
             return None
 
-        bid, ask = await self.broker.get_current_price(signal.symbol)
+        bid, ask = await self.broker.get_current_price(self.settings.broker_symbol)
         current_price = bid if signal.direction == Direction.SELL else ask
 
         if signal.entry_low <= current_price <= signal.entry_high:

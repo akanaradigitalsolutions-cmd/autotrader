@@ -1,3 +1,4 @@
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,6 +17,10 @@ class Settings(BaseSettings):
 
     # Trading
     symbol: str = "XAUUSD"
+    # Exact symbol name your MT5 broker uses for orders/price lookups - may
+    # differ from `symbol` above (e.g. "XAUUSDm" on micro/cent accounts).
+    # Defaults to `symbol` if not set.
+    broker_symbol: str = ""
     lot_size: float = 0.01
     max_lot_size: float = 1.0
     # How many separate trades to open per signal, each using one of the
@@ -30,6 +35,12 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = "INFO"
     log_file: str = "logs/autotrader.log"
+
+    @model_validator(mode="after")
+    def _default_broker_symbol(self) -> "Settings":
+        if not self.broker_symbol:
+            self.broker_symbol = self.symbol
+        return self
 
 
 def load_settings() -> Settings:
