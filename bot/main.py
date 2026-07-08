@@ -3,11 +3,11 @@ import logging
 import time
 
 from bot.broker.metaapi_client import MetaApiExecutionClient
+from bot.commands import CommandHandler
 from bot.config import load_settings
 from bot.engine import TradingEngine
 from bot.logging_config import setup_logging
 from bot.signal_parser import SignalParser
-from bot.status import build_status_report
 from bot.telegram_listener import TelegramListener
 
 logger = logging.getLogger(__name__)
@@ -50,15 +50,10 @@ async def run() -> None:
     )
 
     start_time = time.monotonic()
-
-    async def on_command(text: str) -> str:
-        command = text.strip().split()[0].lower()
-        if command == "/status":
-            return await build_status_report(settings, broker, engine, start_time)
-        return "Unknown command. Available: /status"
+    command_handler = CommandHandler(settings, broker, engine, start_time)
 
     try:
-        await listener.start(engine.handle_message, on_command)
+        await listener.start(engine.handle_message, command_handler.handle)
     finally:
         await broker.disconnect()
 

@@ -46,7 +46,11 @@ class TelegramListener:
         if on_command is not None:
             # Commands are only accepted in Saved Messages ("me") - the chat
             # with yourself - so no one else can control the bot remotely.
-            @self._client.on(events.NewMessage(chats="me", pattern=r"^/\w+"))
+            # Matches slash commands (with any arguments) as well as the bare
+            # yes/no replies used to confirm a pending /set change.
+            @self._client.on(
+                events.NewMessage(chats="me", pattern=r"(?i)^(/\w+(?:\s.*)?|yes|no|y|n)$")
+            )
             async def _command_handler(event) -> None:
                 text = event.raw_text or ""
                 logger.info("Received command: %s", text)
