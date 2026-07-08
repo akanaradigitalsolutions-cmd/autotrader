@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Optional
 
@@ -8,6 +9,12 @@ from bot.risk import resolve_lot_size, take_profits_for_trades
 from bot.signal_parser import SignalParser
 
 logger = logging.getLogger(__name__)
+
+# Bounds how long a single signal can spend waiting on broker RPCs (price
+# lookup, position count, order placement). Without this, an unrecognized
+# broker symbol or a stuck MetaApi connection hangs the handler forever with
+# no error logged, silently dropping the trade.
+BROKER_CALL_TIMEOUT_SECONDS = 30
 
 
 class TradingEngine:
@@ -34,6 +41,21 @@ class TradingEngine:
             signal.take_profits,
         )
 
+        try:
+            await asyncio.wait_for(
+                self._execute_signal(signal), timeout=BROKER_CALL_TIMEOUT_SECONDS
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "Timed out after %ds waiting on broker (check BROKER_SYMBOL=%s "
+                "is a valid symbol on your MT5 account)",
+                BROKER_CALL_TIMEOUT_SECONDS,
+                self.settings.broker_symbol,
+            )
+        except Exception:  # noqa: BLE001 - surface any unexpected error instead of dropping it silently
+            logger.exception("Unexpected error executing signal")
+
+    async def _execute_signal(self, signal: TradeSignal) -> None:
         volume = resolve_lot_size(self.settings)
         trade_tps = take_profits_for_trades(signal.take_profits, self.settings.trades_per_signal)
         entry_price = await self._resolve_entry_price(signal)
