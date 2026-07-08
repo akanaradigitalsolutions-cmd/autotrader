@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 from bot.broker.base import ExecutionClient
@@ -24,6 +25,8 @@ class TradingEngine:
         self.settings = settings
         self.parser = parser
         self.broker = broker
+        self.last_signal_summary: Optional[str] = None
+        self.last_signal_at: Optional[datetime] = None
 
     async def handle_message(self, text: str) -> None:
         signal = self.parser.parse(text)
@@ -39,6 +42,11 @@ class TradingEngine:
             signal.entry_high,
             signal.stop_loss,
             signal.take_profits,
+        )
+        self.last_signal_at = datetime.now(timezone.utc)
+        self.last_signal_summary = (
+            f"{signal.direction} {signal.symbol} entry={signal.entry_low}-{signal.entry_high} "
+            f"sl={signal.stop_loss} tp={signal.take_profits}"
         )
 
         try:

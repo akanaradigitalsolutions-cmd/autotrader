@@ -1,11 +1,12 @@
 import logging
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Optional
 
 from telethon import TelegramClient, events
 
 logger = logging.getLogger(__name__)
 
 MessageHandler = Callable[[str], Awaitable[None]]
+CommandHandler = Callable[[str], Awaitable[str]]
 
 
 class TelegramListener:
@@ -30,7 +31,9 @@ class TelegramListener:
         stripped = channel.strip()
         return int(stripped) if stripped.lstrip("-").isdigit() else stripped
 
-    async def start(self, on_message: MessageHandler) -> None:
+    async def start(
+        self, on_message: MessageHandler, on_command: Optional[CommandHandler] = None
+    ) -> None:
         await self._client.start()
         logger.info("Telegram client started, listening on %s", self._channel)
 
@@ -39,6 +42,16 @@ class TelegramListener:
             text = event.raw_text or ""
             logger.debug("Received message: %s", text)
             await on_message(text)
+
+        if on_command is not None:
+            # Commands are only accepted in Saved Messages ("me") - the chat
+            # with yourself - so no one else can control the bot remotely.
+            @self._client.on(events.NewMessage(chats="me", pattern=r"^/\w+"))
+            async def _command_handler(event) -> None:
+                text = event.raw_text or ""
+                logger.info("Received command: %s", text)
+                reply = await on_command(text)
+                await event.respond(reply)
 
         await self._client.run_until_disconnected()
 
