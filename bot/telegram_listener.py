@@ -10,10 +10,10 @@ CommandHandler = Callable[[str], Awaitable[str]]
 
 
 class TelegramListener:
-    """Reads messages from a single Telegram channel via a user session.
+    """Reads messages from one or more Telegram channels via a user session.
 
     A user session (not the Bot API) is required because the target
-    channel is one you subscribe to, not one you administer - bots can
+    channels are ones you subscribe to, not ones you administer - bots can
     only read channels/groups they've been added to as admin.
 
     First run will prompt for your phone number + login code interactively
@@ -22,7 +22,11 @@ class TelegramListener:
 
     def __init__(self, api_id: int, api_hash: str, session_name: str, channel: str):
         self._client = TelegramClient(session_name, api_id, api_hash)
-        self._channel = self._resolve_channel(channel)
+        # Comma-separated list of channels/chat ids, so multiple signal
+        # sources can be monitored at once (e.g. "-1001422815541,@othersignals").
+        self._channels = [
+            self._resolve_channel(part) for part in channel.split(",") if part.strip()
+        ]
 
     @staticmethod
     def _resolve_channel(channel: str) -> str | int:
@@ -35,12 +39,12 @@ class TelegramListener:
         self, on_message: MessageHandler, on_command: Optional[CommandHandler] = None
     ) -> None:
         await self._client.start()
-        logger.info("Telegram client started, listening on %s", self._channel)
+        logger.info("Telegram client started, listening on %s", self._channels)
 
-        @self._client.on(events.NewMessage(chats=self._channel))
+        @self._client.on(events.NewMessage(chats=self._channels))
         async def _handler(event) -> None:
             text = event.raw_text or ""
-            logger.debug("Received message: %s", text)
+            logger.debug("Received message from %s: %s", event.chat_id, text)
             await on_message(text)
 
         if on_command is not None:

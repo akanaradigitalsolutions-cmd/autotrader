@@ -9,7 +9,9 @@ class Settings(BaseSettings):
     telegram_api_id: int
     telegram_api_hash: str
     telegram_session_name: str = "autotrader"
-    telegram_channel: str  # e.g. "@some_signal_channel" or numeric chat id
+    # e.g. "@some_signal_channel" or numeric chat id. Comma-separate multiple
+    # channels to monitor more than one signal source at once.
+    telegram_channel: str
 
     # MetaApi.cloud (hosted MT5 connection, no local terminal/Windows required)
     metaapi_token: str
