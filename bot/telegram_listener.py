@@ -1,4 +1,7 @@
+import asyncio
 import logging
+import os
+from datetime import datetime, timezone
 from typing import Awaitable, Callable, Optional
 
 from telethon import TelegramClient, events
@@ -7,6 +10,29 @@ logger = logging.getLogger(__name__)
 
 MessageHandler = Callable[[str], Awaitable[None]]
 CommandHandler = Callable[[str], Awaitable[str]]
+
+# The watchdog makes a real Telegram API call on a fixed interval. Telethon
+# can end up "connected" on a dead TCP link and silently stop receiving
+# updates - no exception is ever raised, so the only way to notice is to
+# probe. After enough consecutive probe failures the client is shut down,
+# which ends run_until_disconnected() and lets the process exit non-zero so
+# systemd restarts it with a fresh connection.
+WATCHDOG_INTERVAL_SECONDS = 60
+WATCHDOG_PROBE_TIMEOUT_SECONDS = 20
+WATCHDOG_MAX_FAILURES = 3
+# Emit a proof-of-life log line roughly every 30 minutes at the 60s interval.
+HEARTBEAT_EVERY_CHECKS = 30
+
+# Signals delivered late (reconnect backlog, stalled connection) are
+# dangerous to trade: the market has moved since the price levels were
+# written. Anything older than this is logged and dropped, not handled.
+MAX_MESSAGE_AGE_SECONDS = 600
+
+
+def message_age_seconds(message_date: Optional[datetime]) -> float:
+    if message_date is None:
+        return 0.0
+    return (datetime.now(timezone.utc) - message_date).total_seconds()
 
 
 class TelegramListener:
@@ -44,6 +70,13 @@ class TelegramListener:
         @self._client.on(events.NewMessage(chats=self._channels))
         async def _handler(event) -> None:
             text = event.raw_text or ""
+            age = message_age_seconds(event.message.date)
+            if age > MAX_MESSAGE_AGE_SECONDS:
+                logger.warning(
+                    "Dropping message from %s delivered %.0fs late (limit %ds): %.60s",
+                    event.chat_id, age, MAX_MESSAGE_AGE_SECONDS, text,
+                )
+                return
             logger.debug("Received message from %s: %s", event.chat_id, text)
             await on_message(text)
 
@@ -57,11 +90,64 @@ class TelegramListener:
             )
             async def _command_handler(event) -> None:
                 text = event.raw_text or ""
+                if message_age_seconds(event.message.date) > MAX_MESSAGE_AGE_SECONDS:
+                    return
                 logger.info("Received command: %s", text)
-                reply = await on_command(text)
+                try:
+                    reply = await on_command(text)
+                except Exception:
+                    logger.exception("Command %r failed", text)
+                    reply = "Something went wrong handling that command - check the bot logs."
                 await event.respond(reply)
 
-        await self._client.run_until_disconnected()
+        watchdog = asyncio.create_task(self._watchdog())
+        try:
+            await self._client.run_until_disconnected()
+        finally:
+            watchdog.cancel()
+            # Bounded wait: wait_for() can swallow a cancellation if the
+            # probe completes at the same instant, and shutdown must never
+            # be able to hang on that race.
+            await asyncio.wait({watchdog}, timeout=5)
+
+    async def _watchdog(self) -> None:
+        failures = 0
+        checks = 0
+        while True:
+            await asyncio.sleep(WATCHDOG_INTERVAL_SECONDS)
+            checks += 1
+            try:
+                await asyncio.wait_for(
+                    self._client.get_me(), timeout=WATCHDOG_PROBE_TIMEOUT_SECONDS
+                )
+            except Exception as exc:
+                failures += 1
+                logger.warning(
+                    "Telegram health check failed (%d/%d): %r",
+                    failures, WATCHDOG_MAX_FAILURES, exc,
+                )
+                if failures >= WATCHDOG_MAX_FAILURES:
+                    await self._shutdown_dead_connection()
+                    return
+                continue
+            failures = 0
+            if checks % HEARTBEAT_EVERY_CHECKS == 0:
+                logger.info("Heartbeat: Telegram connection healthy")
+
+    async def _shutdown_dead_connection(self) -> None:
+        logger.error(
+            "Telegram connection is dead (%d failed health checks in a row) - "
+            "shutting down so systemd restarts the bot with a fresh connection",
+            WATCHDOG_MAX_FAILURES,
+        )
+        try:
+            await asyncio.wait_for(self._client.disconnect(), timeout=15)
+        except Exception:
+            # disconnect() itself can hang on a dead connection; at that point
+            # the only reliable recovery is killing the process so systemd
+            # brings up a clean one.
+            logger.exception("Disconnect hung as well - force-exiting")
+            os._exit(1)
 
     async def stop(self) -> None:
         await self._client.disconnect()

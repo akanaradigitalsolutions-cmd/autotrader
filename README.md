@@ -95,6 +95,23 @@ just means running this same Python process somewhere that stays online -
 a small Linux VPS is enough. You do not need a Windows VPS unless you
 switch away from MetaApi to a self-hosted terminal.
 
+## Running 24/7 (systemd)
+
+Use the unit file in `deploy/autotrader.service` (install instructions are
+in its comments). Two things matter for reliability:
+
+- **`Restart=always`** - however the process ends, the bot isn't trading,
+  so systemd must always bring it back. `on-failure` is not enough: a clean
+  Telegram disconnect used to exit with code 0 and leave the bot down
+  silently.
+- The listener runs a **connection watchdog**: every 60s it makes a real
+  Telegram API call, because Telethon can sit on a dead connection without
+  ever raising. After 3 consecutive failures the process exits non-zero and
+  systemd restarts it with a fresh connection. A
+  `Heartbeat: Telegram connection healthy` line is logged every ~30 minutes
+  as proof of life - if journalctl shows no heartbeat for an hour, something
+  is wrong.
+
 ## Disclaimer
 
 This executes real trades with real money once `DRY_RUN=false`. Test

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import sys
 import time
 
 from bot.broker.metaapi_client import MetaApiExecutionClient
@@ -37,7 +38,9 @@ async def run() -> None:
             "MetaApi.cloud account has billing set up (Billing tab at "
             "https://app.metaapi.cloud) - deploying an account requires it."
         )
-        return
+        # Exit non-zero: a clean exit here would leave systemd thinking the
+        # bot stopped on purpose, and it would never be restarted.
+        sys.exit(1)
 
     parser = SignalParser(allowed_symbol=settings.symbol)
     engine = TradingEngine(settings, parser, broker)
@@ -54,8 +57,16 @@ async def run() -> None:
 
     try:
         await listener.start(engine.handle_message, command_handler.handle)
+        # start() returning means Telegram disconnected (or the watchdog gave
+        # up on a dead connection). The bot is no longer trading either way,
+        # so exit non-zero to make systemd bring it back up.
+        logger.error("Telegram listener stopped - exiting so systemd restarts the bot")
+        sys.exit(1)
     finally:
-        await broker.disconnect()
+        try:
+            await asyncio.wait_for(broker.disconnect(), timeout=10)
+        except Exception:
+            logger.warning("Broker disconnect failed or timed out during shutdown")
 
 
 def main() -> None:
