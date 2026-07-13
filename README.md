@@ -111,6 +111,14 @@ in its comments). Two things matter for reliability:
   `Heartbeat: Telegram connection healthy` line is logged every ~30 minutes
   as proof of life - if journalctl shows no heartbeat for an hour, something
   is wrong.
+- A **broker watchdog** (`bot/health.py`) does the same for the MetaApi
+  side: every 2 minutes it fetches the broker symbol's price; after 3
+  consecutive failures the process exits so systemd restarts it and the
+  broker connection is rebuilt. Without this the bot can look alive
+  (Telegram still replies) while every order silently times out. It logs
+  `Heartbeat: broker connection healthy` every ~30 minutes. The startup
+  connection to MetaApi is also bounded (180s) so a degraded MetaApi can't
+  leave the bot hung before it ever starts listening.
 
 ## Disclaimer
 

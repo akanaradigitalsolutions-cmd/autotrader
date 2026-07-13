@@ -7,11 +7,17 @@ from bot.broker.metaapi_client import MetaApiExecutionClient
 from bot.commands import CommandHandler
 from bot.config import load_settings
 from bot.engine import TradingEngine
+from bot.health import broker_watchdog
 from bot.logging_config import setup_logging
 from bot.signal_parser import SignalParser
 from bot.telegram_listener import TelegramListener
 
 logger = logging.getLogger(__name__)
+
+# MetaApi's connect/synchronize steps have no upper bound of their own; if
+# their service is degraded the bot could sit here forever, never reaching
+# the Telegram listener. Bound it and let systemd retry instead.
+BROKER_CONNECT_TIMEOUT_SECONDS = 180
 
 
 async def run() -> None:
@@ -30,9 +36,12 @@ async def run() -> None:
     # simulate whether a signal would market-fill or wait as a pending order.
     broker = MetaApiExecutionClient(settings.metaapi_token, settings.metaapi_account_id)
     try:
-        await broker.connect()
+        await asyncio.wait_for(broker.connect(), timeout=BROKER_CONNECT_TIMEOUT_SECONDS)
     except Exception as exc:  # noqa: BLE001 - this is the top-level startup boundary
-        logger.error("Could not connect to MetaApi: %s", exc)
+        logger.error(
+            "Could not connect to MetaApi within %ds: %r",
+            BROKER_CONNECT_TIMEOUT_SECONDS, exc,
+        )
         logger.error(
             "Check METAAPI_TOKEN/METAAPI_ACCOUNT_ID in .env, and that your "
             "MetaApi.cloud account has billing set up (Billing tab at "
@@ -55,6 +64,13 @@ async def run() -> None:
     start_time = time.monotonic()
     command_handler = CommandHandler(settings, broker, engine, start_time)
 
+    # Watches the MetaApi side the same way the listener watches Telegram:
+    # if broker calls keep failing, the process exits and systemd restarts
+    # it, instead of running on with a dead broker and missing trades.
+    health_task = asyncio.create_task(
+        broker_watchdog(broker, settings.broker_symbol)
+    )
+
     try:
         await listener.start(engine.handle_message, command_handler.handle)
         # start() returning means Telegram disconnected (or the watchdog gave
@@ -63,6 +79,7 @@ async def run() -> None:
         logger.error("Telegram listener stopped - exiting so systemd restarts the bot")
         sys.exit(1)
     finally:
+        health_task.cancel()
         try:
             await asyncio.wait_for(broker.disconnect(), timeout=10)
         except Exception:
