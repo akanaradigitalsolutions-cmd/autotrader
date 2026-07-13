@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Callable, Optional
 
 from bot.broker.base import ExecutionClient
@@ -25,6 +26,26 @@ def _exit_process() -> None:
     os._exit(1)
 
 
+def market_is_closed(now: Optional[datetime] = None) -> bool:
+    """True during the weekend window when gold/forex trading is closed.
+
+    Brokers routinely idle or disconnect their MT5 servers over the
+    weekend, so failed broker probes then are normal and must not
+    restart-loop the bot. The window used here (Fri 23:00 UTC - Sun
+    20:00 UTC) sits inside the true market closure in both US DST
+    regimes (close Fri 21:00-22:00 UTC, reopen Sun 21:00-22:00 UTC),
+    so the watchdog is never suspended while trading is actually open.
+    """
+    now = now or datetime.now(timezone.utc)
+    if now.weekday() == 5:  # Saturday
+        return True
+    if now.weekday() == 4 and now.hour >= 23:  # late Friday
+        return True
+    if now.weekday() == 6 and now.hour < 20:  # Sunday before reopen
+        return True
+    return False
+
+
 async def broker_watchdog(
     broker: ExecutionClient,
     symbol: str,
@@ -41,6 +62,13 @@ async def broker_watchdog(
                 broker.get_current_price(symbol), timeout=BROKER_PROBE_TIMEOUT_SECONDS
             )
         except Exception as exc:
+            if market_is_closed():
+                failures = 0
+                logger.info(
+                    "Broker probe failed but the market is closed for the "
+                    "weekend - not counting it as fatal: %r", exc,
+                )
+                continue
             failures += 1
             logger.warning(
                 "Broker health check failed (%d/%d): %r",
