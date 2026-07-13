@@ -111,6 +111,13 @@ in its comments). Two things matter for reliability:
   `Heartbeat: Telegram connection healthy` line is logged every ~30 minutes
   as proof of life - if journalctl shows no heartbeat for an hour, something
   is wrong.
+- The same watchdog runs **catch_up() every 5 minutes**: the API round-trip
+  above can succeed while the separate update stream that pushes new
+  messages is dead (seen in production - green heartbeats, but no signals
+  or commands delivered for hours). catch_up() actively fetches whatever
+  was missed and re-dispatches it; if it keeps failing, the bot restarts.
+  The stale-message guard still drops anything recovered that is older
+  than 10 minutes, so late signals are never traded.
 - A **broker watchdog** (`bot/health.py`) does the same for the MetaApi
   side: every 2 minutes it fetches the broker symbol's price; after 3
   consecutive failures the process exits so systemd restarts it and the

@@ -22,6 +22,13 @@ WATCHDOG_PROBE_TIMEOUT_SECONDS = 20
 WATCHDOG_MAX_FAILURES = 3
 # Emit a proof-of-life log line roughly every 30 minutes at the 60s interval.
 HEARTBEAT_EVERY_CHECKS = 30
+# The get_me probe only proves request/response traffic works; the update
+# stream that pushes new messages can die separately and silently (seen in
+# production: heartbeats green for hours while no message or command was
+# delivered). catch_up() actively fetches anything missed and re-dispatches
+# it, so run it every few checks as both a recovery and a health probe.
+CATCHUP_EVERY_CHECKS = 5
+CATCHUP_TIMEOUT_SECONDS = 60
 
 # Signals delivered late (reconnect backlog, stalled connection) are
 # dangerous to trade: the market has moved since the price levels were
@@ -112,6 +119,7 @@ class TelegramListener:
 
     async def _watchdog(self) -> None:
         failures = 0
+        catchup_failures = 0
         checks = 0
         while True:
             await asyncio.sleep(WATCHDOG_INTERVAL_SECONDS)
@@ -131,6 +139,23 @@ class TelegramListener:
                     return
                 continue
             failures = 0
+
+            if checks % CATCHUP_EVERY_CHECKS == 0:
+                try:
+                    await asyncio.wait_for(
+                        self._client.catch_up(), timeout=CATCHUP_TIMEOUT_SECONDS
+                    )
+                    catchup_failures = 0
+                except Exception as exc:
+                    catchup_failures += 1
+                    logger.warning(
+                        "Telegram catch-up failed (%d/%d): %r",
+                        catchup_failures, WATCHDOG_MAX_FAILURES, exc,
+                    )
+                    if catchup_failures >= WATCHDOG_MAX_FAILURES:
+                        await self._shutdown_dead_connection()
+                        return
+
             if checks % HEARTBEAT_EVERY_CHECKS == 0:
                 logger.info("Heartbeat: Telegram connection healthy")
 

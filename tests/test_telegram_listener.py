@@ -34,6 +34,8 @@ class FakeTelegramClient:
         self.handlers = []
         self.disconnect_calls = 0
         self.get_me_error: Exception | None = None
+        self.catch_up_error: Exception | None = None
+        self.catch_up_calls = 0
 
     def on(self, event_builder):
         def decorator(fn):
@@ -54,6 +56,11 @@ class FakeTelegramClient:
     async def get_me(self):
         if self.get_me_error is not None:
             raise self.get_me_error
+
+    async def catch_up(self):
+        self.catch_up_calls += 1
+        if self.catch_up_error is not None:
+            raise self.catch_up_error
 
 
 class FakeEvent:
@@ -130,6 +137,20 @@ async def test_watchdog_disconnects_after_repeated_failures(monkeypatch):
 
     await asyncio.wait_for(listener._watchdog(), timeout=5)
 
+    assert listener._client.disconnect_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_watchdog_restarts_when_catch_up_keeps_failing(monkeypatch):
+    monkeypatch.setattr(tl, "WATCHDOG_INTERVAL_SECONDS", 0)
+    listener = make_listener(monkeypatch)
+    # get_me stays healthy - this is the silent update-stream death mode,
+    # where round-trips work but new messages never arrive.
+    listener._client.catch_up_error = ConnectionError("update stream dead")
+
+    await asyncio.wait_for(listener._watchdog(), timeout=5)
+
+    assert listener._client.catch_up_calls == tl.WATCHDOG_MAX_FAILURES
     assert listener._client.disconnect_calls == 1
 
 
