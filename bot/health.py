@@ -4,6 +4,7 @@ import os
 from datetime import datetime, timezone
 from typing import Awaitable, Callable, Optional
 
+from bot.aio import externally_cancelled
 from bot.broker.base import ExecutionClient
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,30 @@ def _exit_process() -> None:
     # os._exit instead of sys.exit: this runs inside a background task,
     # where SystemExit would only kill the task, not the process.
     os._exit(1)
+
+
+async def _notify_and_die(
+    notify: Optional[Callable[[str], Awaitable[None]]],
+    on_dead: Callable[[], None],
+    failures: int,
+) -> None:
+    logger.error(
+        "Broker connection is dead (%d failed health checks in a row) - "
+        "restarting the bot to reconnect to MetaApi",
+        failures,
+    )
+    if notify is not None:
+        # Telegram is a separate connection, so this usually still works
+        # when the broker side is what died.
+        try:
+            await notify(
+                "⚠️ Autotrader: broker connection is dead - restarting to "
+                "reconnect to MetaApi. If this keeps repeating, check your "
+                "account at https://app.metaapi.cloud"
+            )
+        except Exception:
+            logger.exception("Failed to send broker-dead alert")
+    on_dead()
 
 
 def market_is_closed(now: Optional[datetime] = None) -> bool:
@@ -62,6 +87,21 @@ async def broker_watchdog(
             await asyncio.wait_for(
                 broker.get_current_price(symbol), timeout=BROKER_PROBE_TIMEOUT_SECONDS
             )
+        except asyncio.CancelledError as exc:
+            if externally_cancelled():
+                raise
+            # The SDK cancelled its own call (socket reconnect). Seen in
+            # production: this silently killed the watchdog task, leaving
+            # the bot unguarded for 14+ hours. Count it as a failed probe.
+            failures += 1
+            logger.warning(
+                "Broker health check cancelled by MetaApi client (%d/%d): %r",
+                failures, BROKER_MAX_FAILURES, exc,
+            )
+            if failures >= BROKER_MAX_FAILURES:
+                await _notify_and_die(notify, on_dead, failures)
+                return
+            continue
         except Exception as exc:
             if market_is_closed():
                 failures = 0
@@ -76,24 +116,7 @@ async def broker_watchdog(
                 failures, BROKER_MAX_FAILURES, exc,
             )
             if failures >= BROKER_MAX_FAILURES:
-                logger.error(
-                    "Broker connection is dead (%d failed health checks in a row) - "
-                    "restarting the bot to reconnect to MetaApi",
-                    failures,
-                )
-                if notify is not None:
-                    # Telegram is a separate connection, so this usually
-                    # still works when the broker side is what died.
-                    try:
-                        await notify(
-                            "⚠️ Autotrader: broker connection is dead - "
-                            "restarting to reconnect to MetaApi. If this "
-                            "keeps repeating, check your account at "
-                            "https://app.metaapi.cloud"
-                        )
-                    except Exception:
-                        logger.exception("Failed to send broker-dead alert")
-                on_dead()
+                await _notify_and_die(notify, on_dead, failures)
                 return
             continue
         failures = 0

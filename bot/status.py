@@ -2,6 +2,7 @@ import asyncio
 import time
 from datetime import timedelta
 
+from bot.aio import externally_cancelled
 from bot.broker.base import ExecutionClient
 from bot.config import Settings
 from bot.engine import TradingEngine
@@ -24,6 +25,12 @@ async def build_status_report(
         )
     except asyncio.TimeoutError:
         open_positions = "timed out checking broker"
+    except asyncio.CancelledError:
+        if externally_cancelled():
+            raise
+        # MetaApi SDK cancelled its own call (socket reconnect); without
+        # this, /status dies silently and never replies.
+        open_positions = "broker call cancelled (MetaApi reconnecting)"
     except Exception as exc:  # noqa: BLE001 - report the error instead of crashing the status reply
         open_positions = f"error: {exc}"
 

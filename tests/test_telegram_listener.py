@@ -141,6 +141,19 @@ async def test_watchdog_disconnects_after_repeated_failures(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_watchdog_treats_internal_cancellation_as_failure(monkeypatch):
+    # A CancelledError raised inside the probe (library reconnect) must be
+    # counted as a failed check, not silently kill the watchdog task.
+    monkeypatch.setattr(tl, "WATCHDOG_INTERVAL_SECONDS", 0)
+    listener = make_listener(monkeypatch)
+    listener._client.get_me_error = asyncio.CancelledError()
+
+    await asyncio.wait_for(listener._watchdog(), timeout=5)
+
+    assert listener._client.disconnect_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_watchdog_restarts_when_catch_up_keeps_failing(monkeypatch):
     monkeypatch.setattr(tl, "WATCHDOG_INTERVAL_SECONDS", 0)
     listener = make_listener(monkeypatch)

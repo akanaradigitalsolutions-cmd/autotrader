@@ -1,8 +1,9 @@
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
+from bot.aio import externally_cancelled
 from bot.broker.base import ExecutionClient
 from bot.config import Settings
 from bot.models import Direction, TradeSignal
@@ -16,15 +17,28 @@ logger = logging.getLogger(__name__)
 # broker symbol or a stuck MetaApi connection hangs the handler forever with
 # no error logged, silently dropping the trade.
 BROKER_CALL_TIMEOUT_SECONDS = 30
+# A MetaApi reconnect can kill one attempt (TimeoutError or a cancelled
+# in-flight call); signals are time-sensitive, so retry a couple of times
+# before giving up - but never retry once an order may have been sent, to
+# avoid duplicated trades.
+EXECUTE_ATTEMPTS = 3
+RETRY_DELAY_SECONDS = 5
 
 
 class TradingEngine:
     """Wires a parsed Telegram message to a broker order, with basic guardrails."""
 
-    def __init__(self, settings: Settings, parser: SignalParser, broker: ExecutionClient):
+    def __init__(
+        self,
+        settings: Settings,
+        parser: SignalParser,
+        broker: ExecutionClient,
+        notify: Optional[Callable[[str], Awaitable[None]]] = None,
+    ):
         self.settings = settings
         self.parser = parser
         self.broker = broker
+        self.notify = notify
         self.last_signal_summary: Optional[str] = None
         self.last_signal_at: Optional[datetime] = None
 
@@ -49,21 +63,68 @@ class TradingEngine:
             f"sl={signal.stop_loss} tp={signal.take_profits}"
         )
 
-        try:
-            await asyncio.wait_for(
-                self._execute_signal(signal), timeout=BROKER_CALL_TIMEOUT_SECONDS
-            )
-        except asyncio.TimeoutError:
-            logger.error(
-                "Timed out after %ds waiting on broker (check BROKER_SYMBOL=%s "
-                "is a valid symbol on your MT5 account)",
-                BROKER_CALL_TIMEOUT_SECONDS,
-                self.settings.broker_symbol,
-            )
-        except Exception:  # noqa: BLE001 - surface any unexpected error instead of dropping it silently
-            logger.exception("Unexpected error executing signal")
+        state = {"order_attempted": False}
+        for attempt in range(1, EXECUTE_ATTEMPTS + 1):
+            try:
+                await asyncio.wait_for(
+                    self._execute_signal(signal, state), timeout=BROKER_CALL_TIMEOUT_SECONDS
+                )
+                if state.get("order_failed"):
+                    await self._report_failed_signal()
+                return
+            except asyncio.TimeoutError:
+                logger.error(
+                    "Attempt %d/%d timed out after %ds waiting on broker (check "
+                    "BROKER_SYMBOL=%s is a valid symbol on your MT5 account)",
+                    attempt, EXECUTE_ATTEMPTS, BROKER_CALL_TIMEOUT_SECONDS,
+                    self.settings.broker_symbol,
+                )
+            except asyncio.CancelledError:
+                if externally_cancelled():
+                    raise
+                # The MetaApi SDK cancelled its own in-flight call (its socket
+                # reconnected mid-request). Seen in production as a signal
+                # that parsed and then vanished with no trade and no error.
+                logger.error(
+                    "Attempt %d/%d: broker call was cancelled by the MetaApi "
+                    "client (connection reset mid-call)",
+                    attempt, EXECUTE_ATTEMPTS,
+                )
+            except Exception:  # noqa: BLE001 - surface any unexpected error instead of dropping it silently
+                logger.exception(
+                    "Attempt %d/%d: unexpected error executing signal",
+                    attempt, EXECUTE_ATTEMPTS,
+                )
 
-    async def _execute_signal(self, signal: TradeSignal) -> None:
+            if state["order_attempted"]:
+                logger.error(
+                    "Not retrying: an order may already have reached the broker - "
+                    "check the MT5 account manually"
+                )
+                break
+            if attempt < EXECUTE_ATTEMPTS:
+                await asyncio.sleep(RETRY_DELAY_SECONDS)
+
+        await self._report_failed_signal()
+
+    async def _report_failed_signal(self) -> None:
+        logger.error("Signal was NOT fully executed: %s", self.last_signal_summary)
+        if self.notify is None:
+            return
+        try:
+            await self.notify(
+                f"🚨 Autotrader could NOT execute this signal:\n"
+                f"{self.last_signal_summary}\n"
+                "The broker connection kept failing. Check the MT5 account and "
+                "https://app.metaapi.cloud - and check MT5 in case a duplicate "
+                "or partial order went through."
+            )
+        except Exception:
+            logger.exception("Failed to send trade-failure alert")
+
+    async def _execute_signal(self, signal: TradeSignal, state: Optional[dict] = None) -> None:
+        if state is None:
+            state = {"order_attempted": False}
         volume = resolve_lot_size(self.settings)
         trade_tps = take_profits_for_trades(signal.take_profits, self.settings.trades_per_signal)
         entry_price = await self._resolve_entry_price(signal)
@@ -111,6 +172,7 @@ class TradingEngine:
                     "symbol": self.settings.broker_symbol,
                 }
             )
+            state["order_attempted"] = True
             result = await self.broker.place_order(trade_signal, volume, entry_price)
             if result.success:
                 logger.info(
@@ -123,6 +185,7 @@ class TradingEngine:
                 )
             else:
                 logger.error("Trade %d/%d failed: %s", i, len(trades_to_place), result.message)
+                state["order_failed"] = True
 
     async def _resolve_entry_price(self, signal: TradeSignal) -> Optional[float]:
         """Decides whether to fire at market now or place a pending order.

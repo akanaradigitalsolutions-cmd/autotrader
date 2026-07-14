@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import sys
 import time
 
@@ -73,7 +74,10 @@ async def run() -> None:
         sys.exit(1)
 
     parser = SignalParser(allowed_symbol=settings.symbol)
-    engine = TradingEngine(settings, parser, broker)
+    engine = TradingEngine(
+        settings, parser, broker,
+        notify=lambda text: alerter.alert("trade-failed", text),
+    )
 
     start_time = time.monotonic()
     command_handler = CommandHandler(settings, broker, engine, start_time)
@@ -88,6 +92,19 @@ async def run() -> None:
             notify=lambda text: alerter.alert("broker-dead", text),
         )
     )
+    # Backstop: a watchdog that dies of an unexpected exception leaves the
+    # bot unguarded (seen in production: it ran blind for 14+ hours).
+    # Restart rather than run without it.
+    def _die_if_health_watchdog_crashed(task: "asyncio.Task") -> None:
+        if task.cancelled() or task.exception() is None:
+            return
+        logger.critical(
+            "Broker watchdog died unexpectedly - forcing a restart",
+            exc_info=task.exception(),
+        )
+        os._exit(1)
+
+    health_task.add_done_callback(_die_if_health_watchdog_crashed)
 
     await alerter.alert(
         "online",

@@ -1,8 +1,10 @@
+import asyncio
 import logging
 from typing import Optional
 
 from metaapi_cloud_sdk import MetaApi
 
+from bot.aio import externally_cancelled
 from bot.models import Direction, ExecutionResult, TradeSignal
 from bot.broker.base import ExecutionClient
 
@@ -86,6 +88,19 @@ class MetaApiExecutionClient(ExecutionClient):
                 success=True,
                 message="Order placed",
                 order_id=order_id,
+                signal=signal,
+                dry_run=False,
+            )
+        except asyncio.CancelledError:
+            if externally_cancelled():
+                raise
+            # The SDK cancelled its own request future (socket reconnect).
+            # CancelledError bypasses `except Exception`, so without this the
+            # whole calling task dies silently mid-order.
+            logger.error("Order call was cancelled by the MetaApi client (connection reset)")
+            return ExecutionResult(
+                success=False,
+                message="cancelled by MetaApi client (connection reset)",
                 signal=signal,
                 dry_run=False,
             )

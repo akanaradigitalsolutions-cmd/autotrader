@@ -6,6 +6,8 @@ from typing import Awaitable, Callable, Optional
 
 from telethon import TelegramClient, events
 
+from bot.aio import externally_cancelled
+
 logger = logging.getLogger(__name__)
 
 MessageHandler = Callable[[str], Awaitable[None]]
@@ -40,6 +42,19 @@ def message_age_seconds(message_date: Optional[datetime]) -> float:
     if message_date is None:
         return 0.0
     return (datetime.now(timezone.utc) - message_date).total_seconds()
+
+
+def _die_if_watchdog_crashed(task: "asyncio.Task") -> None:
+    if task.cancelled():
+        return  # normal shutdown path
+    if task.exception() is None:
+        return  # returned normally (it already arranged the restart itself)
+    logger.critical(
+        "Telegram watchdog died unexpectedly - forcing a restart so the bot "
+        "does not keep running unguarded",
+        exc_info=task.exception(),
+    )
+    os._exit(1)
 
 
 class TelegramListener:
@@ -116,12 +131,21 @@ class TelegramListener:
                 logger.info("Received command: %s", text)
                 try:
                     reply = await on_command(text)
+                except asyncio.CancelledError:
+                    if externally_cancelled():
+                        raise
+                    logger.error("Command %r was cancelled by a library reconnect", text)
+                    reply = "A backend connection reset while handling that - try again."
                 except Exception:
                     logger.exception("Command %r failed", text)
                     reply = "Something went wrong handling that command - check the bot logs."
                 await event.respond(reply)
 
         watchdog = asyncio.create_task(self._watchdog())
+        # Backstop: if the watchdog itself ever dies of an unexpected
+        # exception, the bot would be left unguarded - force a restart
+        # rather than run blind.
+        watchdog.add_done_callback(_die_if_watchdog_crashed)
         try:
             await self._client.run_until_disconnected()
         finally:
@@ -142,6 +166,20 @@ class TelegramListener:
                 await asyncio.wait_for(
                     self._client.get_me(), timeout=WATCHDOG_PROBE_TIMEOUT_SECONDS
                 )
+            except asyncio.CancelledError:
+                if externally_cancelled():
+                    raise
+                # A library-internal cancellation (reconnect) must count as
+                # a failed probe, not silently kill the watchdog task.
+                failures += 1
+                logger.warning(
+                    "Telegram health check cancelled by a reconnect (%d/%d)",
+                    failures, WATCHDOG_MAX_FAILURES,
+                )
+                if failures >= WATCHDOG_MAX_FAILURES:
+                    await self._shutdown_dead_connection()
+                    return
+                continue
             except Exception as exc:
                 failures += 1
                 logger.warning(
@@ -160,6 +198,17 @@ class TelegramListener:
                         self._client.catch_up(), timeout=CATCHUP_TIMEOUT_SECONDS
                     )
                     catchup_failures = 0
+                except asyncio.CancelledError:
+                    if externally_cancelled():
+                        raise
+                    catchup_failures += 1
+                    logger.warning(
+                        "Telegram catch-up cancelled by a reconnect (%d/%d)",
+                        catchup_failures, WATCHDOG_MAX_FAILURES,
+                    )
+                    if catchup_failures >= WATCHDOG_MAX_FAILURES:
+                        await self._shutdown_dead_connection()
+                        return
                 except Exception as exc:
                     catchup_failures += 1
                     logger.warning(

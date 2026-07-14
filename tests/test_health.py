@@ -68,6 +68,33 @@ async def test_broker_watchdog_exits_after_repeated_failures(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_broker_watchdog_survives_metaapi_cancellations(monkeypatch):
+    # The SDK cancelling its own call must count as a failed probe, not
+    # silently kill the watchdog (this left the bot unguarded for 14h).
+    monkeypatch.setattr(health, "BROKER_CHECK_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(health, "market_is_closed", lambda now=None: False)
+
+    class CancellingBroker:
+        def __init__(self):
+            self.probes = 0
+
+        async def get_current_price(self, symbol):
+            self.probes += 1
+            raise asyncio.CancelledError()
+
+    broker = CancellingBroker()
+    deaths = []
+
+    await asyncio.wait_for(
+        health.broker_watchdog(broker, "XAUUSDm", on_dead=lambda: deaths.append(1)),
+        timeout=5,
+    )
+
+    assert deaths == [1]
+    assert broker.probes == health.BROKER_MAX_FAILURES
+
+
+@pytest.mark.asyncio
 async def test_broker_watchdog_ignores_failures_while_market_closed(monkeypatch):
     monkeypatch.setattr(health, "BROKER_CHECK_INTERVAL_SECONDS", 0)
     monkeypatch.setattr(health, "market_is_closed", lambda now=None: True)
