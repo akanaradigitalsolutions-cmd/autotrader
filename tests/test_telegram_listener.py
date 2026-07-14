@@ -30,7 +30,7 @@ import bot.telegram_listener as tl
 
 
 class FakeTelegramClient:
-    def __init__(self, session, api_id, api_hash):
+    def __init__(self, session, api_id, api_hash, **kwargs):
         self.handlers = []
         self.disconnect_calls = 0
         self.get_me_error: Exception | None = None

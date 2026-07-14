@@ -7,3 +7,4 @@ logs/
 .venv/
 venv/
 .pytest_cache/
+.alert_state.json

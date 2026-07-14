@@ -50,14 +50,21 @@ async def test_broker_watchdog_exits_after_repeated_failures(monkeypatch):
     monkeypatch.setattr(health, "market_is_closed", lambda now=None: False)
     broker = FlakyBroker(failures_before_recovery=None)
     deaths = []
+    alerts = []
+
+    async def notify(text):
+        alerts.append(text)
 
     await asyncio.wait_for(
-        health.broker_watchdog(broker, "XAUUSDm", on_dead=lambda: deaths.append(1)),
+        health.broker_watchdog(
+            broker, "XAUUSDm", on_dead=lambda: deaths.append(1), notify=notify
+        ),
         timeout=5,
     )
 
     assert deaths == [1]
     assert broker.probes == health.BROKER_MAX_FAILURES
+    assert len(alerts) == 1  # user is told on Telegram before the restart
 
 
 @pytest.mark.asyncio

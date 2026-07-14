@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Callable, Optional
+from typing import Awaitable, Callable, Optional
 
 from bot.broker.base import ExecutionClient
 
@@ -50,6 +50,7 @@ async def broker_watchdog(
     broker: ExecutionClient,
     symbol: str,
     on_dead: Optional[Callable[[], None]] = None,
+    notify: Optional[Callable[[str], Awaitable[None]]] = None,
 ) -> None:
     on_dead = on_dead or _exit_process
     failures = 0
@@ -80,6 +81,18 @@ async def broker_watchdog(
                     "restarting the bot to reconnect to MetaApi",
                     failures,
                 )
+                if notify is not None:
+                    # Telegram is a separate connection, so this usually
+                    # still works when the broker side is what died.
+                    try:
+                        await notify(
+                            "⚠️ Autotrader: broker connection is dead - "
+                            "restarting to reconnect to MetaApi. If this "
+                            "keeps repeating, check your account at "
+                            "https://app.metaapi.cloud"
+                        )
+                    except Exception:
+                        logger.exception("Failed to send broker-dead alert")
                 on_dead()
                 return
             continue

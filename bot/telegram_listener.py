@@ -54,12 +54,26 @@ class TelegramListener:
     """
 
     def __init__(self, api_id: int, api_hash: str, session_name: str, channel: str):
-        self._client = TelegramClient(session_name, api_id, api_hash)
+        # catch_up=True makes Telethon fetch missed updates automatically
+        # after its own reconnects too, not just when the watchdog asks.
+        # The stale-message guard below keeps recovered-late signals safe.
+        self._client = TelegramClient(session_name, api_id, api_hash, catch_up=True)
         # Comma-separated list of channels/chat ids, so multiple signal
         # sources can be monitored at once (e.g. "-1001422815541,@othersignals").
         self._channels = [
             self._resolve_channel(part) for part in channel.split(",") if part.strip()
         ]
+
+    async def connect(self) -> None:
+        """Log in / connect without starting the event loop.
+
+        Called early in startup so that later failures (e.g. the broker)
+        can be reported to Saved Messages instead of dying silently.
+        """
+        await self._client.start()
+
+    async def send_to_me(self, text: str) -> None:
+        await self._client.send_message("me", text)
 
     @staticmethod
     def _resolve_channel(channel: str) -> str | int:
