@@ -10,6 +10,12 @@ class ExecutionClient(ABC):
     @abstractmethod
     async def connect(self) -> None: ...
 
+    async def reconnect(self) -> None:
+        """Rebuild a broken connection so a retry doesn't reuse a dead one.
+
+        Default is a no-op; backends with stateful connections override it.
+        """
+
     @abstractmethod
     async def disconnect(self) -> None: ...
 

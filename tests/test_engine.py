@@ -114,6 +114,7 @@ async def test_signal_retries_after_metaapi_cancels_a_call(monkeypatch):
     broker = FakeBroker(bid=4316, ask=4316.2)
     original_get_price = broker.get_current_price
     remaining_failures = {"n": engine_mod.EXECUTE_ATTEMPTS - 1}
+    reconnects = []
 
     async def flaky_get_price(symbol):
         if remaining_failures["n"] > 0:
@@ -121,12 +122,19 @@ async def test_signal_retries_after_metaapi_cancels_a_call(monkeypatch):
             raise asyncio.CancelledError()
         return await original_get_price(symbol)
 
+    async def fake_reconnect():
+        reconnects.append(1)
+
     broker.get_current_price = flaky_get_price
+    broker.reconnect = fake_reconnect
     engine = TradingEngine(make_settings(), SignalParser(), broker)
 
     await engine.handle_message(SELL_SIGNAL)
 
     assert len(broker.placed_orders) == 3  # retried and eventually traded
+    # A fresh connection is built before each retry instead of hammering
+    # the dead one.
+    assert len(reconnects) == engine_mod.EXECUTE_ATTEMPTS - 1
 
 
 @pytest.mark.asyncio

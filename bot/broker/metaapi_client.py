@@ -26,18 +26,42 @@ class MetaApiExecutionClient(ExecutionClient):
     def __init__(self, token: str, account_id: str):
         self._api = MetaApi(token)
         self._account_id = account_id
+        self._account = None
         self._connection = None
 
     async def connect(self) -> None:
-        account = await self._api.metatrader_account_api.get_account(self._account_id)
-        if account.state not in ("DEPLOYED", "DEPLOYING"):
-            await account.deploy()
-        await account.wait_connected()
+        self._account = await self._api.metatrader_account_api.get_account(self._account_id)
+        if self._account.state not in ("DEPLOYED", "DEPLOYING"):
+            await self._account.deploy()
+        await self._account.wait_connected()
 
-        self._connection = account.get_rpc_connection()
+        self._connection = self._account.get_rpc_connection()
         await self._connection.connect()
         await self._connection.wait_synchronized()
         logger.info("Connected to MetaApi account %s", self._account_id)
+
+    async def reconnect(self) -> None:
+        """Tear down and rebuild the RPC connection.
+
+        The websocket to MetaApi drops intermittently; retrying a failed
+        call on the same dead connection just fails again, so the engine
+        calls this between attempts.
+        """
+        logger.warning("Rebuilding MetaApi RPC connection")
+        try:
+            if self._connection is not None:
+                await self._connection.close()
+        except Exception:
+            logger.exception("Closing the dead RPC connection failed (continuing)")
+
+        if self._account is None:
+            self._account = await self._api.metatrader_account_api.get_account(
+                self._account_id
+            )
+        self._connection = self._account.get_rpc_connection()
+        await self._connection.connect()
+        await self._connection.wait_synchronized()
+        logger.info("MetaApi RPC connection rebuilt")
 
     async def disconnect(self) -> None:
         if self._connection:

@@ -23,6 +23,7 @@ BROKER_CALL_TIMEOUT_SECONDS = 30
 # avoid duplicated trades.
 EXECUTE_ATTEMPTS = 3
 RETRY_DELAY_SECONDS = 5
+RECONNECT_TIMEOUT_SECONDS = 60
 
 
 class TradingEngine:
@@ -103,9 +104,26 @@ class TradingEngine:
                 )
                 break
             if attempt < EXECUTE_ATTEMPTS:
+                # Retrying on the same dead connection just fails again -
+                # rebuild it first so the retry has a fresh one.
+                await self._rebuild_broker_connection()
                 await asyncio.sleep(RETRY_DELAY_SECONDS)
 
         await self._report_failed_signal()
+
+    async def _rebuild_broker_connection(self) -> None:
+        reconnect = getattr(self.broker, "reconnect", None)
+        if reconnect is None:
+            return
+        try:
+            await asyncio.wait_for(reconnect(), timeout=RECONNECT_TIMEOUT_SECONDS)
+            logger.info("Broker connection rebuilt before retry")
+        except asyncio.CancelledError:
+            if externally_cancelled():
+                raise
+            logger.warning("Broker reconnect was cancelled by the MetaApi client")
+        except Exception:
+            logger.exception("Broker reconnect failed - retrying on the old connection")
 
     async def _report_failed_signal(self) -> None:
         logger.error("Signal was NOT fully executed: %s", self.last_signal_summary)
