@@ -34,10 +34,10 @@ Python SDK, so this bot can run anywhere - your Mac, this dev container, or
 a plain Linux VPS - now and later, without ever installing MT5 or Wine.
 
 If you later decide to self-host instead (e.g. broker not supported by
-MetaApi), the only piece that changes is `bot/broker/metaapi_client.py` -
-swap it for an `ExecutionClient` implementation that talks to a
-self-hosted MT5 terminal + EA bridge on a Windows VPS. Everything else
-(Telegram listener, parser, engine) is unaffected.
+MetaApi, or the cloud connection proves unreliable), set
+`BROKER_BACKEND=mt5local` and run the bot on a Windows VPS next to a
+local MT5 terminal - see `deploy/WINDOWS_VPS.md`. Everything else
+(Telegram listener, parser, engine, watchdogs, alerts) is unaffected.
 
 ## Setup
 

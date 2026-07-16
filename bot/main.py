@@ -48,25 +48,42 @@ async def run() -> None:
 
     # Connected even in dry-run: price lookups are read-only and needed to
     # simulate whether a signal would market-fill or wait as a pending order.
-    broker = MetaApiExecutionClient(settings.metaapi_token, settings.metaapi_account_id)
+    if settings.broker_backend.lower() == "mt5local":
+        # Imported lazily: the MetaTrader5 package only installs on Windows.
+        from bot.broker.mt5_local_client import Mt5LocalExecutionClient
+
+        broker = Mt5LocalExecutionClient(
+            login=settings.mt5_login,
+            password=settings.mt5_password,
+            server=settings.mt5_server,
+            terminal_path=settings.mt5_terminal_path,
+        )
+    else:
+        if not settings.metaapi_token or not settings.metaapi_account_id:
+            logger.error(
+                "BROKER_BACKEND=metaapi needs METAAPI_TOKEN and METAAPI_ACCOUNT_ID in .env"
+            )
+            sys.exit(1)
+        broker = MetaApiExecutionClient(settings.metaapi_token, settings.metaapi_account_id)
     try:
         await asyncio.wait_for(broker.connect(), timeout=BROKER_CONNECT_TIMEOUT_SECONDS)
     except Exception as exc:  # noqa: BLE001 - this is the top-level startup boundary
         logger.error(
-            "Could not connect to MetaApi within %ds: %r",
-            BROKER_CONNECT_TIMEOUT_SECONDS, exc,
+            "Could not connect to the broker (%s) within %ds: %r",
+            settings.broker_backend, BROKER_CONNECT_TIMEOUT_SECONDS, exc,
         )
         logger.error(
-            "Check METAAPI_TOKEN/METAAPI_ACCOUNT_ID in .env, and that your "
-            "MetaApi.cloud account has billing set up (Billing tab at "
-            "https://app.metaapi.cloud) - deploying an account requires it."
+            "metaapi: check METAAPI_TOKEN/METAAPI_ACCOUNT_ID in .env and the "
+            "account at https://app.metaapi.cloud. mt5local: check that the "
+            "MT5 terminal is running and logged in on this machine."
         )
         await alerter.alert(
-            "metaapi-connect",
-            f"🚨 Autotrader is DOWN: cannot connect to MetaApi ({exc!r}).\n"
+            "broker-connect",
+            f"🚨 Autotrader is DOWN: cannot connect to the broker "
+            f"({settings.broker_backend}): {exc!r}\n"
             "It keeps retrying automatically every ~10s.\n"
-            "Check your account state and billing at https://app.metaapi.cloud "
-            "and that your MT5 demo account is still active in the MT5 app.",
+            "metaapi: check https://app.metaapi.cloud | mt5local: check the "
+            "MT5 terminal is running and logged in on the VPS.",
         )
         await listener.stop()
         # Exit non-zero: a clean exit here would leave systemd thinking the

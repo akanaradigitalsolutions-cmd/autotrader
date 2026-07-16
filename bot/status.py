@@ -42,9 +42,14 @@ async def build_status_report(
             f"{engine.last_signal_summary}"
         )
 
+    if settings.broker_backend.lower() == "mt5local":
+        account = f"local MT5 ({settings.mt5_login or 'terminal login'})"
+    else:
+        account = settings.metaapi_account_id
+
     return (
         f"Mode: {mode}\n"
-        f"Account: {settings.metaapi_account_id}\n"
+        f"Account: {account}\n"
         f"Symbol: {settings.symbol} (broker: {settings.broker_symbol})\n"
         f"Lot size: {settings.lot_size} (max {settings.max_lot_size})\n"
         f"Trades/signal: {settings.trades_per_signal}\n"

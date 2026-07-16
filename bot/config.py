@@ -13,9 +13,24 @@ class Settings(BaseSettings):
     # channels to monitor more than one signal source at once.
     telegram_channel: str
 
+    # Which broker backend to use:
+    #   "metaapi"  - MetaApi.cloud hosted terminal (works from any OS)
+    #   "mt5local" - MT5 terminal running on THIS machine (Windows only,
+    #                official MetaTrader5 package, no cloud middleman)
+    broker_backend: str = "metaapi"
+
     # MetaApi.cloud (hosted MT5 connection, no local terminal/Windows required)
-    metaapi_token: str
-    metaapi_account_id: str
+    metaapi_token: str = ""
+    metaapi_account_id: str = ""
+
+    # mt5local backend. Leave MT5_LOGIN=0 to attach to whatever account the
+    # running terminal is already logged into (recommended: log in once in
+    # the MT5 app on the VPS and keep it running).
+    mt5_login: int = 0
+    mt5_password: str = ""
+    mt5_server: str = ""
+    # Optional full path to terminal64.exe if MT5 is not in the default location.
+    mt5_terminal_path: str = ""
 
     # Trading
     symbol: str = "XAUUSD"

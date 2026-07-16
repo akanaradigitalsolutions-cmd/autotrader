@@ -1,0 +1,5 @@
+# Install this file instead of requirements.txt on a Windows VPS running
+# the MT5 terminal locally (BROKER_BACKEND=mt5local):
+#   pip install -r requirements-windows.txt
+-r requirements.txt
+MetaTrader5>=5.0.45
