@@ -108,6 +108,50 @@ def test_handles_missing_entry_as_market_order():
     assert signal.entry is None
 
 
+# Formats seen in the "PAID VIP SIGNALS" channel (from user screenshots):
+# emoji/words between keyword and number, "_" and "/" entry ranges, and
+# slash-shorthand TP lists.
+PAID_VIP_SIGNALS = [
+    (
+        "🔽GOLD BUY NOW 🔽\n\nENTRY POINT 👉 4007_4004\n"
+        "TAKE PROFIT 🛡 4012\nTAKE PROFIT 🛡 4016\nTAKE PROFIT 🛡 4020\n"
+        "STOP LOSS 🛑 3997",
+        Direction.BUY, (4004.0, 4007.0), 3997, [4012, 4016, 4020],
+    ),
+    (
+        "Gold sell 4118/21\nSL 4133\n\nTp 4115\nTp 4110\nTp 4110\nTp 4050",
+        Direction.SELL, (4118.0, 4121.0), 4133, [4115, 4110, 4050],
+    ),
+    (
+        "gold buy 4175-72\nsl 4162\ntp 4180\ntp 4190\ntp 4250",
+        Direction.BUY, (4172.0, 4175.0), 4162, [4180, 4190, 4250],
+    ),
+    (
+        "GOlD SEll : 4128/33\nSL : 4140\n💱\nTP : 4115/10/5\nTP : Open\n\nPlZZ ❕❗️AWARE",
+        Direction.SELL, (4128.0, 4133.0), 4140, [4115, 4110, 4105],
+    ),
+    (
+        "GOlD SEll : 4152/56\nSL : 4165\n💱\nTP : 4140/20/03\nTP : Open",
+        Direction.SELL, (4152.0, 4156.0), 4165, [4140, 4120, 4103],
+    ),
+    (
+        "GOlD BUY : 4169/65\nSL : 4159\n💱\nTP : 4190/4220/50\nTP : Open",
+        Direction.BUY, (4165.0, 4169.0), 4159, [4190, 4220, 4250],
+    ),
+]
+
+
+@pytest.mark.parametrize("text,direction,zone,sl,tps", PAID_VIP_SIGNALS)
+def test_parses_paid_vip_channel_formats(text, direction, zone, sl, tps):
+    signal = make_parser().parse(text)
+
+    assert signal is not None
+    assert signal.direction == direction
+    assert (signal.entry_low, signal.entry_high) == zone
+    assert signal.stop_loss == sl
+    assert signal.take_profits == tps
+
+
 def test_parses_real_world_lowercase_shorthand_signal():
     text = """gold sell 4455-60
 sl 4468

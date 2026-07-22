@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     # Safety
     dry_run: bool = True
     max_open_positions: int = 3
+    # Refuse to trade a signal when no stop loss could be parsed from it -
+    # a naked position from a misread message is worse than a missed trade.
+    require_stop_loss: bool = True
 
     # Logging
     log_level: str = "INFO"

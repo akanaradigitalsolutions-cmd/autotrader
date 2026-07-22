@@ -15,18 +15,70 @@ DIRECTION_PATTERN = re.compile(r"\b(BUY|SELL|LONG|SHORT)\b", re.IGNORECASE)
 SYMBOL_PATTERN = re.compile(
     r"\b(" + "|".join(re.escape(k) for k in SYMBOL_ALIASES) + r")\b", re.IGNORECASE
 )
+# [^\d\n]{0,20} tolerates filler between a keyword and its number - real
+# channels put words/emoji/arrows there ("ENTRY POINT 👉 4007_4004",
+# "STOP LOSS 🛑 3997", "TAKE PROFIT 🛡 4012"). It cannot cross a newline,
+# so a keyword never steals a number from the next line.
 ENTRY_PATTERN = re.compile(
-    r"(?:ENTRY|PRICE|@)\s*[:=\-]?\s*(\d{3,5}(?:\.\d+)?)(?:\s*[-/]\s*(\d{3,5}(?:\.\d+)?))?",
+    r"(?:\b(?:ENTRY|PRICE)[^\d\n]{0,20}|@\s*)(\d{3,5}(?:\.\d+)?)"
+    r"(?:\s*[-/_]\s*(\d{1,5}(?:\.\d+)?))?",
     re.IGNORECASE,
 )
 # Fallback for signals with no "Entry:" keyword, e.g. "gold sell 4455-60"
-INLINE_RANGE_PATTERN = re.compile(r"(\d{3,5}(?:\.\d+)?)(?:\s*-\s*(\d{1,5}(?:\.\d+)?))?")
+# or "Gold sell 4118/21" (shorthand: "21" means "...21").
+INLINE_RANGE_PATTERN = re.compile(
+    r"(\d{3,5}(?:\.\d+)?)(?:\s*[-/_]\s*(\d{1,5}(?:\.\d+)?))?"
+)
 SL_PATTERN = re.compile(
-    r"(?:S\s*/?\s*L|STOP\s*LOSS)\s*[:=\-]?\s*(\d{3,5}(?:\.\d+)?)", re.IGNORECASE
+    r"\b(?:S\s*/?\s*L|STOP\s*LOSS)[^\d\n]{0,20}(\d{3,5}(?:\.\d+)?)", re.IGNORECASE
 )
+# The value part accepts slash-separated shorthand lists ("4115/10/5"
+# meaning 4115, 4110, 4105) as used by some channels.
 TP_PATTERN = re.compile(
-    r"(?:T\s*/?\s*P\d?|TAKE\s*PROFIT\d?)\s*[:=\-]?\s*(\d{3,5}(?:\.\d+)?)", re.IGNORECASE
+    r"\b(?:T\s*/?\s*P\d?|TAKE\s*PROFIT\d?)[^\d\n]{0,20}"
+    r"(\d{3,5}(?:\.\d+)?(?:\s*/\s*\d{1,5}(?:\.\d+)?)*)",
+    re.IGNORECASE,
 )
+
+
+def _expand_shorthand(base: float, part: str) -> float:
+    """Expands "33" against 4128 -> 4133 (replace trailing digits)."""
+    if "." in part or len(part) >= len(str(int(base))):
+        return float(part)
+    base_str = str(int(base))
+    return float(base_str[: -len(part)] + part)
+
+
+def _expand_range(low: float, high_raw: Optional[str]) -> tuple[float, float]:
+    if not high_raw:
+        return low, low
+    high = _expand_shorthand(low, high_raw)
+    return (low, high) if low <= high else (high, low)
+
+
+def _expand_tp_values(token: str, direction: Direction) -> list[float]:
+    """Expands a TP token like "4115/10/5" into [4115, 4110, 4105].
+
+    Shorthand parts splice into the previous value's digits; when that
+    produces a value on the wrong side (TPs must move away from entry:
+    down for SELL, up for BUY), shift it one digit-magnitude to keep the
+    sequence monotonic - e.g. SELL "4115/10/5": "5" splices to 4115,
+    which is not below 4110, so it becomes 4105.
+    """
+    parts = [p.strip() for p in token.split("/")]
+    values = [float(parts[0])]
+    for raw in parts[1:]:
+        prev = values[-1]
+        if "." in raw or len(raw) >= len(str(int(prev))):
+            value = float(raw)
+        else:
+            value = _expand_shorthand(prev, raw)
+            if direction == Direction.SELL and value >= prev:
+                value -= 10 ** len(raw)
+            elif direction == Direction.BUY and value <= prev:
+                value += 10 ** len(raw)
+        values.append(value)
+    return values
 
 
 class SignalParser:
@@ -64,7 +116,9 @@ class SignalParser:
         if sl_match:
             stop_loss = float(sl_match.group(1))
 
-        take_profits = [float(v) for v in TP_PATTERN.findall(text)]
+        take_profits: list[float] = []
+        for token in TP_PATTERN.findall(text):
+            take_profits.extend(_expand_tp_values(token, direction))
         # de-duplicate while preserving order
         seen = set()
         take_profits = [tp for tp in take_profits if not (tp in seen or seen.add(tp))]
@@ -86,9 +140,9 @@ class SignalParser:
     ) -> tuple[Optional[float], Optional[float]]:
         entry_match = ENTRY_PATTERN.search(text)
         if entry_match:
-            low = float(entry_match.group(1))
-            high = float(entry_match.group(2)) if entry_match.group(2) else low
-            return (low, high) if low <= high else (high, low)
+            return _expand_range(
+                float(entry_match.group(1)), entry_match.group(2)
+            )
 
         # No "Entry:" keyword - look for a bare number/range on the direction's
         # own line, e.g. "gold sell 4455-60" (shorthand: "60" means "...60").
@@ -103,13 +157,4 @@ class SignalParser:
         if not inline_match:
             return None, None
 
-        low = float(inline_match.group(1))
-        high_raw = inline_match.group(2)
-        if not high_raw:
-            return low, low
-        if "." in high_raw or len(high_raw) >= len(str(int(low))):
-            high = float(high_raw)
-        else:
-            low_str = str(int(low))
-            high = float(low_str[: -len(high_raw)] + high_raw)
-        return (low, high) if low <= high else (high, low)
+        return _expand_range(float(inline_match.group(1)), inline_match.group(2))

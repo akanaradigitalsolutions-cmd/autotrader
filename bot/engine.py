@@ -64,6 +64,21 @@ class TradingEngine:
             f"sl={signal.stop_loss} tp={signal.take_profits}"
         )
 
+        if signal.stop_loss is None and self.settings.require_stop_loss:
+            logger.error(
+                "Refusing to trade a signal without a stop loss: %s",
+                self.last_signal_summary,
+            )
+            if self.notify is not None:
+                try:
+                    await self.notify(
+                        "⚠️ Autotrader ignored a signal because no stop loss "
+                        f"could be read from it:\n{self.last_signal_summary}"
+                    )
+                except Exception:
+                    logger.exception("Failed to send no-stop-loss alert")
+            return
+
         state = {"order_attempted": False}
         for attempt in range(1, EXECUTE_ATTEMPTS + 1):
             try:

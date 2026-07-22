@@ -107,6 +107,23 @@ async def test_buy_signal_waits_as_pending_order_when_price_above_zone():
 
 
 @pytest.mark.asyncio
+async def test_signal_without_stop_loss_is_refused():
+    broker = FakeBroker(bid=4316, ask=4316.2)
+    alerts = []
+
+    async def notify(text):
+        alerts.append(text)
+
+    engine = TradingEngine(make_settings(), SignalParser(), broker, notify=notify)
+
+    await engine.handle_message("gold sell 4314-18\ntp 4309\ntp 4301")
+
+    assert broker.placed_orders == []  # naked position must never be opened
+    assert len(alerts) == 1
+    assert "stop loss" in alerts[0]
+
+
+@pytest.mark.asyncio
 async def test_signal_retries_after_metaapi_cancels_a_call(monkeypatch):
     # The MetaApi SDK cancels its own in-flight calls when its socket
     # reconnects; the first attempts fail that way, then it recovers.
