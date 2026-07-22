@@ -123,6 +123,11 @@ class SignalParser:
         seen = set()
         take_profits = [tp for tp in take_profits if not (tp in seen or seen.add(tp))]
 
+        if entry_low is None and stop_loss is None and not take_profits:
+            # Direction + symbol alone ("Gold Buy Now" hype/teaser posts) is
+            # not a tradable signal - require at least one price level.
+            return None
+
         return TradeSignal(
             symbol=symbol,
             direction=direction,

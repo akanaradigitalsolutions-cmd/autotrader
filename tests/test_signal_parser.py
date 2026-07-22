@@ -152,6 +152,44 @@ def test_parses_paid_vip_channel_formats(text, direction, zone, sl, tps):
     assert signal.take_profits == tps
 
 
+# Formats from the "Gold Sell/Buy Zone @ ..." channel (user screenshots).
+ZONE_CHANNEL_SIGNALS = [
+    (
+        "Gold Sell Zone @ 4058 - 4063 🔴\n\nStoploss: 4068\n"
+        "Take profits: 4053 / 4051 / 4049",
+        Direction.SELL, (4058.0, 4063.0), 4068, [4053, 4051, 4049],
+    ),
+    (
+        "Gold Buy Now @ 4102-4107 🟢\n\nStoploss: 4097\n"
+        "Take profits: 4112 / 4114 / 4116",
+        Direction.BUY, (4102.0, 4107.0), 4097, [4112, 4114, 4116],
+    ),
+    (
+        "Gold Sell Zone @ 4103 - 4108 🔴\n\nStoploss: 4112\n"
+        "Take profits: 4098 / 4096 / 4094",
+        Direction.SELL, (4103.0, 4108.0), 4112, [4098, 4096, 4094],
+    ),
+]
+
+
+@pytest.mark.parametrize("text,direction,zone,sl,tps", ZONE_CHANNEL_SIGNALS)
+def test_parses_zone_channel_formats(text, direction, zone, sl, tps):
+    signal = make_parser().parse(text)
+
+    assert signal is not None
+    assert signal.direction == direction
+    assert (signal.entry_low, signal.entry_high) == zone
+    assert signal.stop_loss == sl
+    assert signal.take_profits == tps
+
+
+def test_teaser_posts_without_any_price_level_are_not_signals():
+    # Channels post hype messages before the real signal - these must not
+    # be treated as tradable signals.
+    assert make_parser().parse("Gold Buy Now") is None
+    assert make_parser().parse("Gold Sell Now") is None
+
+
 def test_parses_real_world_lowercase_shorthand_signal():
     text = """gold sell 4455-60
 sl 4468
