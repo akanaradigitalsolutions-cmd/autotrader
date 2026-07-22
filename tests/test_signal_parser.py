@@ -183,6 +183,52 @@ def test_parses_zone_channel_formats(text, direction, zone, sl, tps):
     assert signal.take_profits == tps
 
 
+# Formats from the pips-based channel: "GOLD BUY NOW : 4139" with TPs as
+# pip distances from entry (1 gold pip = $0.10).
+PIPS_CHANNEL_SIGNALS = [
+    (
+        "GOLD BUY NOW : 4139 ✅✅\n\nSL : 4129\nTP 1st: 70PIPS\nTP 2nd: 150PIPS\n\n"
+        "Use Proper Entry & Money Management ‼️",
+        Direction.BUY, (4139.0, 4139.0), 4129, [4146.0, 4154.0],
+    ),
+    (
+        "GOLD BUY NOW : 4160 ✅✅\n\nSL : 4150\nTP 1st: 70PIPS\nTP 2nd: 150PIPS\n\n"
+        "Use Proper Entry & Money Management ‼️",
+        Direction.BUY, (4160.0, 4160.0), 4150, [4167.0, 4175.0],
+    ),
+    (
+        "GOLD BUY NOW : 4065 ✅✅\n\nSL : 4055\nTP 1st: 70PIPS\nTP 2nd: 150PIPS",
+        Direction.BUY, (4065.0, 4065.0), 4055, [4072.0, 4080.0],
+    ),
+    (
+        # Synthetic sell variant: pips TPs must go BELOW entry for a sell.
+        "GOLD SELL NOW : 4139\nSL : 4149\nTP 1st: 70PIPS\nTP 2nd: 150PIPS",
+        Direction.SELL, (4139.0, 4139.0), 4149, [4132.0, 4124.0],
+    ),
+]
+
+
+@pytest.mark.parametrize("text,direction,zone,sl,tps", PIPS_CHANNEL_SIGNALS)
+def test_parses_pips_based_tp_formats(text, direction, zone, sl, tps):
+    signal = make_parser().parse(text)
+
+    assert signal is not None
+    assert signal.direction == direction
+    assert (signal.entry_low, signal.entry_high) == zone
+    assert signal.stop_loss == sl
+    assert signal.take_profits == tps
+
+
+def test_pips_value_is_never_mistaken_for_an_absolute_tp_price():
+    # "150PIPS" must not be read as an absolute TP of 150.
+    text = "GOLD BUY NOW : 4139\nSL : 4129\nTP 2nd: 150PIPS"
+    signal = make_parser().parse(text)
+
+    assert signal is not None
+    assert 150.0 not in signal.take_profits
+    assert signal.take_profits == [4154.0]
+
+
 def test_teaser_posts_without_any_price_level_are_not_signals():
     # Channels post hype messages before the real signal - these must not
     # be treated as tradable signals.

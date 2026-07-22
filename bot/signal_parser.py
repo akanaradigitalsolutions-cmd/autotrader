@@ -33,12 +33,23 @@ SL_PATTERN = re.compile(
     r"\b(?:S\s*/?\s*L|STOP\s*LOSS)[^\d\n]{0,20}(\d{3,5}(?:\.\d+)?)", re.IGNORECASE
 )
 # The value part accepts slash-separated shorthand lists ("4115/10/5"
-# meaning 4115, 4110, 4105) as used by some channels.
+# meaning 4115, 4110, 4105) as used by some channels. TP labels may be
+# plain ("TP:", "TP2:") or ordinal ("TP 1st:", "TP 2nd:").
+TP_ORDINAL = r"(?:\s*\d{1,2}\s*(?:ST|ND|RD|TH)\b)?"
 TP_PATTERN = re.compile(
-    r"\b(?:T\s*/?\s*P\d?|TAKE\s*PROFIT\d?)[^\d\n]{0,20}"
-    r"(\d{3,5}(?:\.\d+)?(?:\s*/\s*\d{1,5}(?:\.\d+)?)*)",
+    r"\b(?:T\s*/?\s*P\d?|TAKE\s*PROFIT\d?)" + TP_ORDINAL + r"[^\d\n]{0,20}"
+    r"(\d{3,5}(?:\.\d+)?(?:\s*/\s*\d{1,5}(?:\.\d+)?)*)(?!\s*PIPS?)",
     re.IGNORECASE,
 )
+# Relative TPs, e.g. "TP 1st: 70PIPS" - a distance from entry, not a price.
+TP_PIPS_PATTERN = re.compile(
+    r"\b(?:T\s*/?\s*P\d?|TAKE\s*PROFIT\d?)" + TP_ORDINAL + r"[^\d\n]{0,20}"
+    r"(\d{1,4}(?:\.\d+)?)\s*PIPS?\b",
+    re.IGNORECASE,
+)
+# For XAUUSD, 1 pip = $0.10 by the common convention these channels use
+# (e.g. entry 4139 / SL 4129 is quoted as a 100-pip stop).
+GOLD_PIP_SIZE = 0.1
 
 
 def _expand_shorthand(base: float, part: str) -> float:
@@ -119,6 +130,17 @@ class SignalParser:
         take_profits: list[float] = []
         for token in TP_PATTERN.findall(text):
             take_profits.extend(_expand_tp_values(token, direction))
+
+        # Relative TPs ("TP 1st: 70PIPS") anchor on the entry price; they
+        # can only be resolved when the signal states an entry.
+        pips_values = [float(v) for v in TP_PIPS_PATTERN.findall(text)]
+        if pips_values and entry_low is not None:
+            reference = (entry_low + entry_high) / 2
+            sign = 1 if direction == Direction.BUY else -1
+            take_profits.extend(
+                round(reference + sign * pips * GOLD_PIP_SIZE, 2)
+                for pips in pips_values
+            )
         # de-duplicate while preserving order
         seen = set()
         take_profits = [tp for tp in take_profits if not (tp in seen or seen.add(tp))]
