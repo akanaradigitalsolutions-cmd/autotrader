@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, Optional
 
 from bot.aio import externally_cancelled
@@ -42,6 +42,7 @@ class TradingEngine:
         self.notify = notify
         self.last_signal_summary: Optional[str] = None
         self.last_signal_at: Optional[datetime] = None
+        self._recent_signals: dict[tuple, datetime] = {}
 
     async def handle_message(self, text: str) -> None:
         signal = self.parser.parse(text)
@@ -63,6 +64,9 @@ class TradingEngine:
             f"{signal.direction} {signal.symbol} entry={signal.entry_low}-{signal.entry_high} "
             f"sl={signal.stop_loss} tp={signal.take_profits}"
         )
+
+        if self._is_duplicate(signal):
+            return
 
         if signal.stop_loss is None and self.settings.require_stop_loss:
             logger.error(
@@ -125,6 +129,37 @@ class TradingEngine:
                 await asyncio.sleep(RETRY_DELAY_SECONDS)
 
         await self._report_failed_signal()
+
+    def _is_duplicate(self, signal: TradeSignal) -> bool:
+        """True when a signal with identical levels was traded recently.
+
+        Channels repost the same signal as a reminder (seen in production:
+        the same levels 30-70 minutes apart); each repost is a new message
+        and would open the same trades again without this guard.
+        """
+        window = timedelta(minutes=self.settings.duplicate_signal_window_minutes)
+        if window <= timedelta(0):
+            return False
+
+        fingerprint = (
+            signal.direction, signal.symbol, signal.entry_low, signal.entry_high,
+            signal.stop_loss, tuple(signal.take_profits),
+        )
+        now = datetime.now(timezone.utc)
+        last_seen = self._recent_signals.get(fingerprint)
+        if last_seen is not None and now - last_seen < window:
+            logger.info(
+                "Ignoring duplicate signal (same levels seen %.0f minutes ago): %s",
+                (now - last_seen).total_seconds() / 60, self.last_signal_summary,
+            )
+            return True
+
+        self._recent_signals[fingerprint] = now
+        # Prune expired fingerprints so the map can't grow unbounded.
+        self._recent_signals = {
+            fp: ts for fp, ts in self._recent_signals.items() if now - ts < window
+        }
+        return False
 
     async def _rebuild_broker_connection(self) -> None:
         reconnect = getattr(self.broker, "reconnect", None)

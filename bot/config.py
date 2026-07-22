@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     # Refuse to trade a signal when no stop loss could be parsed from it -
     # a naked position from a misread message is worse than a missed trade.
     require_stop_loss: bool = True
+    # Some channels repost the same signal as a reminder minutes later; a
+    # signal with identical levels seen again within this window is not
+    # traded twice. 0 disables the guard.
+    duplicate_signal_window_minutes: int = 120
 
     # Logging
     log_level: str = "INFO"

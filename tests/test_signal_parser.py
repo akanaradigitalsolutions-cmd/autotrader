@@ -229,6 +229,34 @@ def test_pips_value_is_never_mistaken_for_an_absolute_tp_price():
     assert signal.take_profits == [4154.0]
 
 
+# Single-TP "Now : <price>" channel (user screenshots).
+SINGLE_TP_CHANNEL_SIGNALS = [
+    (
+        "Gold Sell Now : 4077\nSL : 4085\nTP : 4062",
+        Direction.SELL, (4077.0, 4077.0), 4085, [4062],
+    ),
+    (
+        "Gold Buy Now : 4067\nSL : 4060\nTP : 4101",
+        Direction.BUY, (4067.0, 4067.0), 4060, [4101],
+    ),
+    (
+        "Gold Buy Now : 4008\nSL : 4000\nTP : 4031",
+        Direction.BUY, (4008.0, 4008.0), 4000, [4031],
+    ),
+]
+
+
+@pytest.mark.parametrize("text,direction,zone,sl,tps", SINGLE_TP_CHANNEL_SIGNALS)
+def test_parses_single_tp_now_format(text, direction, zone, sl, tps):
+    signal = make_parser().parse(text)
+
+    assert signal is not None
+    assert signal.direction == direction
+    assert (signal.entry_low, signal.entry_high) == zone
+    assert signal.stop_loss == sl
+    assert signal.take_profits == tps
+
+
 def test_teaser_posts_without_any_price_level_are_not_signals():
     # Channels post hype messages before the real signal - these must not
     # be treated as tradable signals.

@@ -107,6 +107,45 @@ async def test_buy_signal_waits_as_pending_order_when_price_above_zone():
 
 
 @pytest.mark.asyncio
+async def test_reposted_signal_is_not_traded_twice():
+    broker = FakeBroker(bid=4316, ask=4316.2)
+    engine = TradingEngine(make_settings(), SignalParser(), broker)
+
+    await engine.handle_message(SELL_SIGNAL)
+    first_count = len(broker.placed_orders)
+    await engine.handle_message(SELL_SIGNAL)  # channel reposts the signal
+
+    assert first_count == 3
+    assert len(broker.placed_orders) == first_count  # no duplicate trades
+
+
+@pytest.mark.asyncio
+async def test_duplicate_guard_can_be_disabled():
+    broker = FakeBroker(bid=4316, ask=4316.2)
+    engine = TradingEngine(
+        make_settings(duplicate_signal_window_minutes=0), SignalParser(), broker
+    )
+
+    await engine.handle_message(SELL_SIGNAL)
+    await engine.handle_message(SELL_SIGNAL)
+
+    assert len(broker.placed_orders) == 6  # guard off - both messages trade
+
+
+@pytest.mark.asyncio
+async def test_different_signals_are_not_treated_as_duplicates():
+    broker = FakeBroker(bid=4316, ask=4316.2)
+    engine = TradingEngine(make_settings(), SignalParser(), broker)
+
+    await engine.handle_message(SELL_SIGNAL)
+    await engine.handle_message(
+        "gold sell 4330-35\nsl 4345\ntp 4325\ntp 4315\ntp 4200"
+    )
+
+    assert len(broker.placed_orders) == 6  # both traded - levels differ
+
+
+@pytest.mark.asyncio
 async def test_signal_without_stop_loss_is_refused():
     broker = FakeBroker(bid=4316, ask=4316.2)
     alerts = []
