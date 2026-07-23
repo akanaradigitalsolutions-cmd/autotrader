@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     # reaches this percent of the day-start balance. 0 disables. Resets at
     # UTC midnight (and on restart).
     daily_loss_limit_percent: float = 5.0
+    # Every signal's reward:risk (TP1 distance vs stop distance) is logged;
+    # a signal below this ratio is flagged as low quality (TP1 nearer than
+    # the stop). Monitoring only - it does not block the trade.
+    min_reward_risk: float = 1.0
 
     # Logging
     log_level: str = "INFO"

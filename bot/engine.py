@@ -8,7 +8,7 @@ from bot.broker.base import ExecutionClient
 from bot.config import Settings
 from bot.models import Direction, TradeSignal
 from bot.position_monitor import PositionMonitor
-from bot.risk import resolve_lot_size, take_profits_for_trades
+from bot.risk import resolve_lot_size, reward_risk_ratio, take_profits_for_trades
 from bot.risk_guards import DailyLossGuard
 from bot.signal_parser import SignalParser
 
@@ -38,11 +38,13 @@ class TradingEngine:
         broker: ExecutionClient,
         notify: Optional[Callable[[str], Awaitable[None]]] = None,
         position_monitor: Optional[PositionMonitor] = None,
+        risk_notify: Optional[Callable[[str], Awaitable[None]]] = None,
     ):
         self.settings = settings
         self.parser = parser
         self.broker = broker
         self.notify = notify
+        self.risk_notify = risk_notify
         self.position_monitor = position_monitor
         self.last_signal_summary: Optional[str] = None
         self.last_signal_at: Optional[datetime] = None
@@ -55,23 +57,40 @@ class TradingEngine:
             logger.debug("Message did not match a tradable signal, ignoring")
             return
 
+        rr = reward_risk_ratio(signal)
+        rr_text = f"{rr:.2f}" if rr is not None else "n/a"
         logger.info(
-            "Parsed signal: %s %s entry=%s-%s sl=%s tp=%s",
+            "Parsed signal: %s %s entry=%s-%s sl=%s tp=%s R:R(TP1)=%s",
             signal.direction,
             signal.symbol,
             signal.entry_low,
             signal.entry_high,
             signal.stop_loss,
             signal.take_profits,
+            rr_text,
         )
         self.last_signal_at = datetime.now(timezone.utc)
         self.last_signal_summary = (
             f"{signal.direction} {signal.symbol} entry={signal.entry_low}-{signal.entry_high} "
-            f"sl={signal.stop_loss} tp={signal.take_profits}"
+            f"sl={signal.stop_loss} tp={signal.take_profits} R:R={rr_text}"
         )
 
         if self._is_duplicate(signal):
             return
+
+        if rr is not None and rr < self.settings.min_reward_risk:
+            logger.warning(
+                "LOW reward:risk (%.2f < %.2f) - TP1 is nearer than the stop: %s",
+                rr, self.settings.min_reward_risk, self.last_signal_summary,
+            )
+            if self.risk_notify is not None:
+                try:
+                    await self.risk_notify(
+                        f"⚠️ Low reward:risk ({rr_text}) - TP1 is closer than the stop, "
+                        f"so this setup risks more than TP1 pays:\n{self.last_signal_summary}"
+                    )
+                except Exception:
+                    logger.exception("Failed to send risk-warning alert")
 
         if signal.stop_loss is None and self.settings.require_stop_loss:
             logger.error(

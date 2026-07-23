@@ -250,6 +250,46 @@ async def test_breakeven_not_registered_for_pending_orders():
 
 
 @pytest.mark.asyncio
+async def test_low_reward_risk_signal_warns_but_still_trades():
+    # BUY 4139, SL 4129 (risk 10), TP1 4146 (reward 7) -> R:R 0.7, below 1.0
+    broker = FakeBroker(bid=4139, ask=4139)
+    warnings = []
+
+    async def risk_notify(text):
+        warnings.append(text)
+
+    engine = TradingEngine(
+        make_settings(), SignalParser(), broker, risk_notify=risk_notify
+    )
+
+    await engine.handle_message(
+        "GOLD BUY NOW : 4139\nSL : 4129\nTP 1st: 70PIPS\nTP 2nd: 150PIPS"
+    )
+
+    assert len(warnings) == 1
+    assert "reward:risk" in warnings[0].lower()
+    assert len(broker.placed_orders) >= 1  # warned, not blocked
+
+
+@pytest.mark.asyncio
+async def test_good_reward_risk_signal_does_not_warn():
+    broker = FakeBroker(bid=4120, ask=4120)
+    warnings = []
+
+    async def risk_notify(text):
+        warnings.append(text)
+
+    engine = TradingEngine(
+        make_settings(), SignalParser(), broker, risk_notify=risk_notify
+    )
+
+    # SELL 4120, SL 4128 (risk 8), TP1 4099 (reward 21) -> R:R 2.6
+    await engine.handle_message("gold sell 4118-22\nsl 4128\ntp 4099\ntp 4090")
+
+    assert warnings == []
+
+
+@pytest.mark.asyncio
 async def test_signal_without_stop_loss_is_refused():
     broker = FakeBroker(bid=4316, ask=4316.2)
     alerts = []

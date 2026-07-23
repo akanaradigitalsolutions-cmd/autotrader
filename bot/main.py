@@ -99,6 +99,7 @@ async def run() -> None:
         settings, parser, broker,
         notify=lambda text: alerter.alert("trade-failed", text),
         position_monitor=monitor,
+        risk_notify=lambda text: alerter.alert("risk-warning", text),
     )
 
     start_time = time.monotonic()
