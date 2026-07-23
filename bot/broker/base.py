@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Optional
 
-from bot.models import ExecutionResult, TradeSignal
+from bot.models import ExecutionResult, OpenPosition, TradeSignal
 
 
 class ExecutionClient(ABC):
@@ -21,6 +21,22 @@ class ExecutionClient(ABC):
 
     @abstractmethod
     async def count_open_positions(self, symbol: str) -> int: ...
+
+    async def get_positions(self, symbol: str) -> list[OpenPosition]:
+        """Open positions for the symbol. Default empty; real backends override.
+
+        Used by the conflict guard (don't hold BUY and SELL at once) and the
+        breakeven monitor (move a runner's stop after TP1 hits).
+        """
+        return []
+
+    async def modify_stop_loss(self, position_id: str, stop_loss: float) -> bool:
+        """Move an open position's stop loss. Default: unsupported (False)."""
+        return False
+
+    async def get_account_balance(self) -> Optional[float]:
+        """Realized account balance, or None if the backend can't report it."""
+        return None
 
     @abstractmethod
     async def get_current_price(self, symbol: str) -> tuple[float, float]:

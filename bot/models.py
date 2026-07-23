@@ -30,3 +30,17 @@ class ExecutionResult(BaseModel):
     order_id: Optional[str] = None
     signal: TradeSignal
     dry_run: bool
+
+
+class OpenPosition(BaseModel):
+    """A currently-open broker position (used by the conflict guard and the
+    breakeven monitor)."""
+
+    id: str
+    symbol: str
+    direction: Direction
+    volume: float
+    open_price: float
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
+    profit: float = 0.0

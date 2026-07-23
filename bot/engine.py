@@ -7,7 +7,9 @@ from bot.aio import externally_cancelled
 from bot.broker.base import ExecutionClient
 from bot.config import Settings
 from bot.models import Direction, TradeSignal
+from bot.position_monitor import PositionMonitor
 from bot.risk import resolve_lot_size, take_profits_for_trades
+from bot.risk_guards import DailyLossGuard
 from bot.signal_parser import SignalParser
 
 logger = logging.getLogger(__name__)
@@ -35,14 +37,17 @@ class TradingEngine:
         parser: SignalParser,
         broker: ExecutionClient,
         notify: Optional[Callable[[str], Awaitable[None]]] = None,
+        position_monitor: Optional[PositionMonitor] = None,
     ):
         self.settings = settings
         self.parser = parser
         self.broker = broker
         self.notify = notify
+        self.position_monitor = position_monitor
         self.last_signal_summary: Optional[str] = None
         self.last_signal_at: Optional[datetime] = None
         self._recent_signals: dict[tuple, datetime] = {}
+        self._daily_loss = DailyLossGuard(broker, settings.daily_loss_limit_percent)
 
     async def handle_message(self, text: str) -> None:
         signal = self.parser.parse(text)
@@ -213,6 +218,31 @@ class TradingEngine:
                 )
             return
 
+        if await self._daily_loss.should_block():
+            logger.warning(
+                "Daily loss limit (%.1f%%) reached - not opening new trades today",
+                self.settings.daily_loss_limit_percent,
+            )
+            if self.notify is not None:
+                try:
+                    await self.notify(
+                        f"🛑 Daily loss limit ({self.settings.daily_loss_limit_percent:.0f}%) "
+                        "reached - no new trades will open until tomorrow (UTC)."
+                    )
+                except Exception:
+                    logger.exception("Failed to send daily-loss alert")
+            return
+
+        if self.settings.prevent_opposite_positions and await self._has_opposite_position(
+            signal.direction
+        ):
+            logger.warning(
+                "Skipping %s %s: an opposite-direction position is already open "
+                "(conflict guard)",
+                signal.direction, signal.symbol,
+            )
+            return
+
         open_positions = await self.broker.count_open_positions(self.settings.broker_symbol)
         available_slots = self.settings.max_open_positions - open_positions
         if available_slots <= 0:
@@ -233,6 +263,7 @@ class TradingEngine:
                 self.settings.max_open_positions,
             )
 
+        placed_ids: list[str] = []
         for i, tp in enumerate(trades_to_place, start=1):
             trade_signal = signal.model_copy(
                 update={
@@ -243,6 +274,7 @@ class TradingEngine:
             state["order_attempted"] = True
             result = await self.broker.place_order(trade_signal, volume, entry_price)
             if result.success:
+                placed_ids.append(result.order_id or "")
                 logger.info(
                     "Trade %d/%d executed (%s): id=%s tp=%s",
                     i,
@@ -254,6 +286,29 @@ class TradingEngine:
             else:
                 logger.error("Trade %d/%d failed: %s", i, len(trades_to_place), result.message)
                 state["order_failed"] = True
+
+        # Only market fills (entry_price is None) are breakeven-managed; a
+        # pending order isn't a position yet, so there's no ticket to move.
+        if entry_price is None:
+            self._register_breakeven(signal, placed_ids)
+
+    def _register_breakeven(self, signal: TradeSignal, placed_ids: list[str]) -> None:
+        if not self.settings.breakeven_after_tp1 or self.position_monitor is None:
+            return
+        ids = [i for i in placed_ids if i]
+        if len(ids) < 2:
+            return  # single trade - no runner to protect
+        self.position_monitor.register(
+            symbol=self.settings.broker_symbol,
+            direction=signal.direction,
+            tp1_id=ids[0],
+            runner_ids=ids[1:],
+        )
+
+    async def _has_opposite_position(self, direction: Direction) -> bool:
+        positions = await self.broker.get_positions(self.settings.broker_symbol)
+        opposite = Direction.SELL if direction == Direction.BUY else Direction.BUY
+        return any(p.direction == opposite for p in positions)
 
     async def _resolve_entry_price(self, signal: TradeSignal) -> Optional[float]:
         """Decides whether to fire at market now or place a pending order.

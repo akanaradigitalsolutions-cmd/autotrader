@@ -34,6 +34,17 @@ async def build_status_report(
     except Exception as exc:  # noqa: BLE001 - report the error instead of crashing the status reply
         open_positions = f"error: {exc}"
 
+    daily_loss = (
+        f"{settings.daily_loss_limit_percent:.0f}%"
+        if settings.daily_loss_limit_percent > 0
+        else "off"
+    )
+    guards = (
+        f"conflict={'on' if settings.prevent_opposite_positions else 'off'} "
+        f"breakeven={'on' if settings.breakeven_after_tp1 else 'off'} "
+        f"daily_loss={daily_loss}"
+    )
+
     if engine.last_signal_at is None:
         last_signal = "none yet"
     else:
@@ -54,6 +65,7 @@ async def build_status_report(
         f"Lot size: {settings.lot_size} (max {settings.max_lot_size})\n"
         f"Trades/signal: {settings.trades_per_signal}\n"
         f"Max open positions: {settings.max_open_positions}\n"
+        f"Guards: {guards}\n"
         f"Open positions now: {open_positions}\n"
         f"Uptime: {uptime}\n"
         f"Last signal: {last_signal}"

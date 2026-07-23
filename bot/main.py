@@ -11,6 +11,7 @@ from bot.engine import TradingEngine
 from bot.health import broker_watchdog
 from bot.logging_config import setup_logging
 from bot.notifier import Alerter
+from bot.position_monitor import PositionMonitor
 from bot.signal_parser import SignalParser
 from bot.telegram_listener import TelegramListener
 
@@ -91,13 +92,20 @@ async def run() -> None:
         sys.exit(1)
 
     parser = SignalParser(allowed_symbol=settings.symbol)
+    monitor = PositionMonitor(
+        broker, notify=lambda text: alerter.alert("breakeven", text)
+    )
     engine = TradingEngine(
         settings, parser, broker,
         notify=lambda text: alerter.alert("trade-failed", text),
+        position_monitor=monitor,
     )
 
     start_time = time.monotonic()
     command_handler = CommandHandler(settings, broker, engine, start_time)
+
+    # Moves runner positions to breakeven after their TP1 hits.
+    monitor_task = asyncio.create_task(monitor.run())
 
     # Watches the MetaApi side the same way the listener watches Telegram:
     # if broker calls keep failing, the process exits and systemd restarts
@@ -137,6 +145,7 @@ async def run() -> None:
         sys.exit(1)
     finally:
         health_task.cancel()
+        monitor_task.cancel()
         try:
             await asyncio.wait_for(broker.disconnect(), timeout=10)
         except Exception:

@@ -5,7 +5,7 @@ from typing import Optional
 import MetaTrader5 as mt5
 
 from bot.broker.base import ExecutionClient
-from bot.models import Direction, ExecutionResult, TradeSignal
+from bot.models import Direction, ExecutionResult, OpenPosition, TradeSignal
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +72,56 @@ class Mt5LocalExecutionClient(ExecutionClient):
     async def count_open_positions(self, symbol: str) -> int:
         positions = await asyncio.to_thread(mt5.positions_get, symbol=symbol)
         return len(positions or ())
+
+    async def get_positions(self, symbol: str) -> list[OpenPosition]:
+        raw = await asyncio.to_thread(mt5.positions_get, symbol=symbol)
+        return [self._to_open_position(p) for p in (raw or ())]
+
+    @staticmethod
+    def _to_open_position(p) -> OpenPosition:
+        direction = Direction.BUY if p.type == mt5.POSITION_TYPE_BUY else Direction.SELL
+        return OpenPosition(
+            id=str(p.ticket),
+            symbol=p.symbol,
+            direction=direction,
+            volume=float(p.volume),
+            open_price=float(p.price_open),
+            stop_loss=float(p.sl) or None,
+            take_profit=float(p.tp) or None,
+            profit=float(p.profit),
+        )
+
+    async def get_account_balance(self) -> Optional[float]:
+        info = await asyncio.to_thread(mt5.account_info)
+        return float(info.balance) if info is not None else None
+
+    async def modify_stop_loss(self, position_id: str, stop_loss: float) -> bool:
+        return await asyncio.to_thread(self._modify_sl_sync, position_id, stop_loss)
+
+    def _modify_sl_sync(self, position_id: str, stop_loss: float) -> bool:
+        ticket = int(position_id)
+        positions = mt5.positions_get(ticket=ticket)
+        if not positions:
+            logger.warning("Cannot modify SL: position %s no longer open", position_id)
+            return False
+        pos = positions[0]
+        request = {
+            "action": mt5.TRADE_ACTION_SLTP,
+            "symbol": pos.symbol,
+            "position": ticket,
+            "sl": stop_loss,
+            "tp": pos.tp,  # keep the existing take profit
+            "magic": MAGIC_NUMBER,
+        }
+        result = mt5.order_send(request)
+        if result is not None and result.retcode == mt5.TRADE_RETCODE_DONE:
+            return True
+        logger.error(
+            "Modify SL failed for %s: %s",
+            position_id,
+            getattr(result, "comment", None) or mt5.last_error(),
+        )
+        return False
 
     async def get_current_price(self, symbol: str) -> tuple[float, float]:
         return await asyncio.to_thread(self._get_tick, symbol)

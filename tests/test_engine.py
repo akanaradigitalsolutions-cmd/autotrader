@@ -6,7 +6,8 @@ import pytest
 import bot.engine as engine_mod
 from bot.config import Settings
 from bot.engine import TradingEngine
-from bot.models import ExecutionResult, TradeSignal
+from bot.models import Direction, ExecutionResult, OpenPosition, TradeSignal
+from bot.position_monitor import PositionMonitor
 from bot.signal_parser import SignalParser
 
 
@@ -15,6 +16,9 @@ class FakeBroker:
         self.bid = bid
         self.ask = ask
         self.placed_orders: list[tuple[TradeSignal, float, Optional[float]]] = []
+        self.positions: list[OpenPosition] = []
+        self.balance: float = 1000.0
+        self.sl_modifications: list[tuple[str, float]] = []
 
     async def connect(self) -> None:
         pass
@@ -23,7 +27,17 @@ class FakeBroker:
         pass
 
     async def count_open_positions(self, symbol: str) -> int:
-        return 0
+        return len(self.positions)
+
+    async def get_positions(self, symbol: str) -> list[OpenPosition]:
+        return list(self.positions)
+
+    async def get_account_balance(self) -> float:
+        return self.balance
+
+    async def modify_stop_loss(self, position_id: str, stop_loss: float) -> bool:
+        self.sl_modifications.append((position_id, stop_loss))
+        return True
 
     async def get_current_price(self, symbol: str) -> tuple[float, float]:
         return self.bid, self.ask
@@ -32,7 +46,8 @@ class FakeBroker:
         self, signal: TradeSignal, volume: float, entry_price: Optional[float] = None
     ) -> ExecutionResult:
         self.placed_orders.append((signal, volume, entry_price))
-        return ExecutionResult(success=True, message="ok", order_id="1", signal=signal, dry_run=False)
+        order_id = str(len(self.placed_orders))
+        return ExecutionResult(success=True, message="ok", order_id=order_id, signal=signal, dry_run=False)
 
 
 def make_settings(**overrides) -> Settings:
@@ -143,6 +158,95 @@ async def test_different_signals_are_not_treated_as_duplicates():
     )
 
     assert len(broker.placed_orders) == 6  # both traded - levels differ
+
+
+def _open(direction, open_price=4300.0):
+    return OpenPosition(
+        id="99", symbol="XAUUSD", direction=direction, volume=0.01, open_price=open_price
+    )
+
+
+@pytest.mark.asyncio
+async def test_conflict_guard_blocks_opposite_direction():
+    broker = FakeBroker(bid=4316, ask=4316.2)
+    broker.positions = [_open(Direction.BUY)]  # a BUY is already open
+    engine = TradingEngine(make_settings(), SignalParser(), broker)
+
+    await engine.handle_message(SELL_SIGNAL)  # opposite direction
+
+    assert broker.placed_orders == []
+
+
+@pytest.mark.asyncio
+async def test_conflict_guard_allows_same_direction():
+    broker = FakeBroker(bid=4316, ask=4316.2)
+    broker.positions = [_open(Direction.SELL, open_price=4320.0)]
+    # max_open_positions high so the slot cap doesn't mask the guard's decision.
+    engine = TradingEngine(make_settings(max_open_positions=6), SignalParser(), broker)
+
+    await engine.handle_message(SELL_SIGNAL)
+
+    assert len(broker.placed_orders) == 3  # same direction - allowed
+
+
+@pytest.mark.asyncio
+async def test_conflict_guard_can_be_disabled():
+    broker = FakeBroker(bid=4316, ask=4316.2)
+    broker.positions = [_open(Direction.BUY)]
+    engine = TradingEngine(
+        make_settings(prevent_opposite_positions=False, max_open_positions=6),
+        SignalParser(),
+        broker,
+    )
+
+    await engine.handle_message(SELL_SIGNAL)
+
+    assert len(broker.placed_orders) == 3
+
+
+@pytest.mark.asyncio
+async def test_daily_loss_limit_blocks_further_trades():
+    broker = FakeBroker(bid=4316, ask=4316.2)
+    engine = TradingEngine(
+        make_settings(daily_loss_limit_percent=5.0), SignalParser(), broker
+    )
+
+    await engine.handle_message(SELL_SIGNAL)  # sets day-start balance 1000, trades
+    assert len(broker.placed_orders) == 3
+
+    broker.balance = 940.0  # -6% realized on the day
+    await engine.handle_message("gold sell 4330-35\nsl 4345\ntp 4325\ntp 4315\ntp 4200")
+
+    assert len(broker.placed_orders) == 3  # blocked - no new trades today
+
+
+@pytest.mark.asyncio
+async def test_breakeven_registered_for_multi_trade_market_fill():
+    broker = FakeBroker(bid=4316, ask=4316.2)  # price in zone -> market fill
+    monitor = PositionMonitor(broker, interval=0)
+    engine = TradingEngine(
+        make_settings(), SignalParser(), broker, position_monitor=monitor
+    )
+
+    await engine.handle_message(SELL_SIGNAL)  # 3 trades
+
+    assert len(monitor._managed) == 1
+    managed = monitor._managed[0]
+    assert managed.tp1_id == "1"
+    assert managed.runner_ids == ["2", "3"]
+
+
+@pytest.mark.asyncio
+async def test_breakeven_not_registered_for_pending_orders():
+    broker = FakeBroker(bid=4300, ask=4300.2)  # below zone -> pending orders
+    monitor = PositionMonitor(broker, interval=0)
+    engine = TradingEngine(
+        make_settings(), SignalParser(), broker, position_monitor=monitor
+    )
+
+    await engine.handle_message(SELL_SIGNAL)
+
+    assert monitor._managed == []  # pending orders aren't positions yet
 
 
 @pytest.mark.asyncio

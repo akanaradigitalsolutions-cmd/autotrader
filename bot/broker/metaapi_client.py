@@ -5,7 +5,7 @@ from typing import Optional
 from metaapi_cloud_sdk import MetaApi
 
 from bot.aio import externally_cancelled
-from bot.models import Direction, ExecutionResult, TradeSignal
+from bot.models import Direction, ExecutionResult, OpenPosition, TradeSignal
 from bot.broker.base import ExecutionClient
 
 logger = logging.getLogger(__name__)
@@ -70,6 +70,43 @@ class MetaApiExecutionClient(ExecutionClient):
     async def count_open_positions(self, symbol: str) -> int:
         positions = await self._connection.get_positions()
         return sum(1 for p in positions if p.get("symbol") == symbol)
+
+    async def get_positions(self, symbol: str) -> list[OpenPosition]:
+        positions = await self._connection.get_positions()
+        result = []
+        for p in positions:
+            if p.get("symbol") != symbol:
+                continue
+            direction = (
+                Direction.BUY if p.get("type") == "POSITION_TYPE_BUY" else Direction.SELL
+            )
+            result.append(
+                OpenPosition(
+                    id=str(p.get("id")),
+                    symbol=p.get("symbol"),
+                    direction=direction,
+                    volume=float(p.get("volume", 0) or 0),
+                    open_price=float(p.get("openPrice", 0) or 0),
+                    stop_loss=p.get("stopLoss"),
+                    take_profit=p.get("takeProfit"),
+                    profit=float(p.get("profit", 0) or 0),
+                )
+            )
+        return result
+
+    async def get_account_balance(self) -> Optional[float]:
+        info = await self._connection.get_account_information()
+        return float(info.get("balance")) if info else None
+
+    async def modify_stop_loss(self, position_id: str, stop_loss: float) -> bool:
+        try:
+            await self._connection.modify_position(
+                position_id, stop_loss=stop_loss
+            )
+            return True
+        except Exception:
+            logger.exception("Modify SL failed for %s", position_id)
+            return False
 
     async def get_current_price(self, symbol: str) -> tuple[float, float]:
         price = await self._connection.get_symbol_price(symbol)

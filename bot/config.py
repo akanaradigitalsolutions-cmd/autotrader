@@ -55,6 +55,18 @@ class Settings(BaseSettings):
     # signal with identical levels seen again within this window is not
     # traded twice. 0 disables the guard.
     duplicate_signal_window_minutes: int = 120
+    # Conflict guard: never hold a BUY and a SELL on the same symbol at once
+    # (following several channels, they contradict each other and you get
+    # stopped out both ways). Skips a signal opposite to what's already open.
+    prevent_opposite_positions: bool = True
+    # After the nearest take-profit (TP1) is hit, move the remaining
+    # position(s) stop loss to their entry price, so a runner can't turn a
+    # banked winner back into a loss.
+    breakeven_after_tp1: bool = True
+    # Circuit breaker: stop opening new trades once the day's realized loss
+    # reaches this percent of the day-start balance. 0 disables. Resets at
+    # UTC midnight (and on restart).
+    daily_loss_limit_percent: float = 5.0
 
     # Logging
     log_level: str = "INFO"
