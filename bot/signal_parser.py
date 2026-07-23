@@ -107,6 +107,11 @@ class SignalParser:
         if not text:
             return None
 
+        # Strip thousands separators between digits ("4,118" -> "4118"); a
+        # comma between digits is always a grouping separator here, and if
+        # left in it mangles the parsed price.
+        text = re.sub(r"(?<=\d),(?=\d)", "", text)
+
         symbol_match = SYMBOL_PATTERN.search(text)
         direction_match = DIRECTION_PATTERN.search(text)
         if not symbol_match or not direction_match:

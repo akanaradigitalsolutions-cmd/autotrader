@@ -78,20 +78,6 @@ class TradingEngine:
         if self._is_duplicate(signal):
             return
 
-        if rr is not None and rr < self.settings.min_reward_risk:
-            logger.warning(
-                "LOW reward:risk (%.2f < %.2f) - TP1 is nearer than the stop: %s",
-                rr, self.settings.min_reward_risk, self.last_signal_summary,
-            )
-            if self.risk_notify is not None:
-                try:
-                    await self.risk_notify(
-                        f"⚠️ Low reward:risk ({rr_text}) - TP1 is closer than the stop, "
-                        f"so this setup risks more than TP1 pays:\n{self.last_signal_summary}"
-                    )
-                except Exception:
-                    logger.exception("Failed to send risk-warning alert")
-
         if signal.stop_loss is None and self.settings.require_stop_loss:
             logger.error(
                 "Refusing to trade a signal without a stop loss: %s",
@@ -106,6 +92,36 @@ class TradingEngine:
                 except Exception:
                     logger.exception("Failed to send no-stop-loss alert")
             return
+
+        inconsistency = self._consistency_error(signal)
+        if inconsistency is not None:
+            logger.error(
+                "Refusing inconsistent signal (%s) - likely a parse error: %s",
+                inconsistency, self.last_signal_summary,
+            )
+            if self.notify is not None:
+                try:
+                    await self.notify(
+                        f"⚠️ Autotrader ignored a signal that looks misparsed "
+                        f"({inconsistency}):\n{self.last_signal_summary}"
+                    )
+                except Exception:
+                    logger.exception("Failed to send inconsistent-signal alert")
+            return
+
+        if rr is not None and rr < self.settings.min_reward_risk:
+            logger.warning(
+                "LOW reward:risk (%.2f < %.2f) - TP1 is nearer than the stop: %s",
+                rr, self.settings.min_reward_risk, self.last_signal_summary,
+            )
+            if self.risk_notify is not None:
+                try:
+                    await self.risk_notify(
+                        f"⚠️ Low reward:risk ({rr_text}) - TP1 is closer than the stop, "
+                        f"so this setup risks more than TP1 pays:\n{self.last_signal_summary}"
+                    )
+                except Exception:
+                    logger.exception("Failed to send risk-warning alert")
 
         state = {"order_attempted": False}
         for attempt in range(1, EXECUTE_ATTEMPTS + 1):
@@ -323,6 +339,34 @@ class TradingEngine:
             tp1_id=ids[0],
             runner_ids=ids[1:],
         )
+
+    @staticmethod
+    def _consistency_error(signal: TradeSignal) -> Optional[str]:
+        """Sanity-check the price levels against the trade direction.
+
+        A misparse (e.g. a mangled entry of 420 while the real levels are
+        ~4120) shows up as levels on the wrong side: a SELL whose stop is
+        not above entry, or whose take-profits are not below it. Catching
+        that here refuses the trade instead of sending a wrongly-priced
+        order. Also rejects genuinely nonsensical signals (stop on the
+        wrong side).
+        """
+        entry, sl, tps = signal.entry, signal.stop_loss, signal.take_profits
+        if signal.direction == Direction.BUY:
+            if entry is not None and sl is not None and sl >= entry:
+                return f"BUY stop {sl} not below entry {entry}"
+            if entry is not None and any(tp <= entry for tp in tps):
+                return f"BUY take-profit not above entry {entry}: {tps}"
+            if entry is None and sl is not None and any(tp <= sl for tp in tps):
+                return f"BUY take-profit not above stop {sl}: {tps}"
+        else:
+            if entry is not None and sl is not None and sl <= entry:
+                return f"SELL stop {sl} not above entry {entry}"
+            if entry is not None and any(tp >= entry for tp in tps):
+                return f"SELL take-profit not below entry {entry}: {tps}"
+            if entry is None and sl is not None and any(tp >= sl for tp in tps):
+                return f"SELL take-profit not below stop {sl}: {tps}"
+        return None
 
     async def _has_opposite_position(self, direction: Direction) -> bool:
         positions = await self.broker.get_positions(self.settings.broker_symbol)

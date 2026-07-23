@@ -257,6 +257,16 @@ def test_parses_single_tp_now_format(text, direction, zone, sl, tps):
     assert signal.take_profits == tps
 
 
+def test_thousands_separator_commas_are_stripped():
+    signal = make_parser().parse(
+        "Gold Sell Zone @ 4,118 - 4,122\nStoploss: 4,129\nTake profits: 4,113 / 4,105"
+    )
+    assert signal is not None
+    assert (signal.entry_low, signal.entry_high) == (4118.0, 4122.0)
+    assert signal.stop_loss == 4129.0
+    assert signal.take_profits == [4113.0, 4105.0]
+
+
 def test_teaser_posts_without_any_price_level_are_not_signals():
     # Channels post hype messages before the real signal - these must not
     # be treated as tradable signals.

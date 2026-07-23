@@ -65,7 +65,8 @@ def make_settings(**overrides) -> Settings:
 
 
 SELL_SIGNAL = "gold sell 4314-18\nsl 4325.9\ntp 4309\ntp 4301\ntp 4200"
-BUY_SIGNAL = "gold buy 4310-15\nsl 4325\ntp 4305\ntp 4295\ntp 4210"
+# A realistic BUY: stop below the entry zone, take-profits above it.
+BUY_SIGNAL = "gold buy 4310-15\nsl 4300\ntp 4325\ntp 4335\ntp 4400"
 
 
 @pytest.mark.asyncio
@@ -247,6 +248,44 @@ async def test_breakeven_not_registered_for_pending_orders():
     await engine.handle_message(SELL_SIGNAL)
 
     assert monitor._managed == []  # pending orders aren't positions yet
+
+
+@pytest.mark.asyncio
+async def test_misparsed_signal_with_levels_on_wrong_side_is_refused():
+    # A mangled SELL: entry ~420 but stop/TPs are ~4100 (real levels), so
+    # the take-profits sit ABOVE the entry - impossible for a sell.
+    broker = FakeBroker(bid=4120, ask=4120)
+    alerts = []
+
+    async def notify(text):
+        alerts.append(text)
+
+    engine = TradingEngine(make_settings(), SignalParser(), broker, notify=notify)
+
+    # Build the broken signal directly (the parser mangles some channels'
+    # formatting into exactly this shape).
+    from bot.models import TradeSignal
+
+    bad = TradeSignal(
+        symbol="XAUUSD", direction=Direction.SELL, entry=420.0,
+        entry_low=418.0, entry_high=422.0, stop_loss=4129.0,
+        take_profits=[4113.0, 4105.0, 4010.0], raw_text="x",
+    )
+    engine.parser = _StubParser(bad)
+
+    await engine.handle_message("anything")
+
+    assert broker.placed_orders == []
+    assert len(alerts) == 1
+    assert "misparsed" in alerts[0].lower()
+
+
+class _StubParser:
+    def __init__(self, signal):
+        self._signal = signal
+
+    def parse(self, text):
+        return self._signal
 
 
 @pytest.mark.asyncio
