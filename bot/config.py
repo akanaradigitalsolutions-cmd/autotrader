@@ -75,6 +75,14 @@ class Settings(BaseSettings):
     # skip a not-yet-opened signal and close any position already opened for
     # the cancelled signal (matched by its price levels).
     honor_cancellations: bool = True
+    # Trailing stop (profit lock). Once a position is this many pips in
+    # profit, trail its stop this far behind the best price, so a reversal
+    # exits in profit instead of at the original stop. 1 gold pip = $0.10.
+    # trailing_activate_pips = 0 disables it. Note: the stop is trailed on
+    # the monitor's polling interval, so it locks sustained moves - it can't
+    # catch a fast spike-and-reverse between checks.
+    trailing_activate_pips: float = 50.0
+    trailing_distance_pips: float = 15.0
 
     # Logging
     log_level: str = "INFO"

@@ -6,10 +6,11 @@ from typing import Awaitable, Callable, Optional
 from bot.aio import externally_cancelled
 from bot.broker.base import ExecutionClient
 from bot.models import Direction
+from bot.signal_parser import GOLD_PIP_SIZE
 
 logger = logging.getLogger(__name__)
 
-CHECK_INTERVAL_SECONDS = 30
+CHECK_INTERVAL_SECONDS = 20
 
 
 @dataclass
@@ -43,18 +44,26 @@ class PositionMonitor:
         notify: Optional[Callable[[str], Awaitable[None]]] = None,
         interval: int = CHECK_INTERVAL_SECONDS,
         journal=None,
+        trailing_activate_pips: float = 0.0,
+        trailing_distance_pips: float = 0.0,
+        pip_size: float = GOLD_PIP_SIZE,
     ):
         self._broker = broker
         self._notify = notify
         self._interval = interval
         self._journal = journal
+        self._activate = trailing_activate_pips * pip_size
+        self._distance = trailing_distance_pips * pip_size
         self._managed: list[ManagedTrade] = []
-        # position id -> symbol, for detecting closes to journal.
-        self._journal_tracked: dict[str, str] = {}
+        # position id -> symbol, for every bot position (close detection +
+        # trailing). Independent of the journal so trailing works either way.
+        self._tracked: dict[str, str] = {}
+        # position id -> best (most favourable) price seen, for trailing.
+        self._peak: dict[str, float] = {}
 
     def track_for_journal(self, position_id: str, symbol: str) -> None:
-        if self._journal is not None and position_id:
-            self._journal_tracked[position_id] = symbol
+        if position_id:
+            self._tracked[position_id] = symbol
 
     def register(
         self, symbol: str, direction: Direction, tp1_id: str, runner_ids: list[str]
@@ -83,16 +92,17 @@ class PositionMonitor:
                 logger.exception("Position monitor cycle failed")
 
     async def check_once(self) -> None:
-        if not self._managed and not self._journal_tracked:
+        if not self._managed and not self._tracked:
             return
 
-        symbols = {m.symbol for m in self._managed} | set(self._journal_tracked.values())
+        symbols = {m.symbol for m in self._managed} | set(self._tracked.values())
         open_by_symbol: dict[str, dict[str, object]] = {}
         for symbol in symbols:
             positions = await self._broker.get_positions(symbol)
             open_by_symbol[symbol] = {p.id: p for p in positions}
 
-        await self._journal_closed_positions(open_by_symbol)
+        await self._reconcile_closed(open_by_symbol)
+        await self._apply_trailing(open_by_symbol)
 
         still_managed: list[ManagedTrade] = []
         for m in self._managed:
@@ -110,20 +120,57 @@ class PositionMonitor:
 
         self._managed = still_managed
 
-    async def _journal_closed_positions(self, open_by_symbol) -> None:
-        if self._journal is None or not self._journal_tracked:
-            return
-        for pid, symbol in list(self._journal_tracked.items()):
+    async def _reconcile_closed(self, open_by_symbol) -> None:
+        for pid, symbol in list(self._tracked.items()):
             if pid in open_by_symbol.get(symbol, {}):
                 continue  # still open
-            # Closed since last check - record its realized P/L.
+            # Closed since last check - record its realized P/L if journaling.
+            if self._journal is not None:
+                try:
+                    profit = await self._broker.get_closed_profit(pid)
+                except Exception:
+                    logger.exception("Could not read closed profit for %s", pid)
+                    profit = None
+                self._journal.record_close(pid, profit)
+            del self._tracked[pid]
+
+    async def _apply_trailing(self, open_by_symbol) -> None:
+        if self._activate <= 0:
+            return
+        open_ids = set()
+        for symbol, positions in open_by_symbol.items():
+            if not positions:
+                continue
             try:
-                profit = await self._broker.get_closed_profit(pid)
+                bid, ask = await self._broker.get_current_price(symbol)
             except Exception:
-                logger.exception("Could not read closed profit for %s", pid)
-                profit = None
-            self._journal.record_close(pid, profit)
-            del self._journal_tracked[pid]
+                logger.exception("Trailing: could not read price for %s", symbol)
+                continue
+            for pid, p in positions.items():
+                open_ids.add(pid)
+                await self._trail_one(pid, p, bid, ask)
+        # Forget peaks of positions that have closed.
+        self._peak = {k: v for k, v in self._peak.items() if k in open_ids}
+
+    async def _trail_one(self, pid, position, bid, ask) -> None:
+        if position.direction == Direction.BUY:
+            exit_price = bid  # a buy is closed at the bid
+            if exit_price - position.open_price < self._activate:
+                return
+            peak = max(self._peak.get(pid, exit_price), exit_price)
+            self._peak[pid] = peak
+            new_sl = round(peak - self._distance, 2)
+            if position.stop_loss is None or new_sl > position.stop_loss + 1e-9:
+                await self._broker.modify_stop_loss(pid, new_sl)
+        else:
+            exit_price = ask  # a sell is closed at the ask
+            if position.open_price - exit_price < self._activate:
+                return
+            peak = min(self._peak.get(pid, exit_price), exit_price)
+            self._peak[pid] = peak
+            new_sl = round(peak + self._distance, 2)
+            if position.stop_loss is None or new_sl < position.stop_loss - 1e-9:
+                await self._broker.modify_stop_loss(pid, new_sl)
 
     async def _move_runners_to_breakeven(self, m, open_map, open_runners) -> None:
         moved = 0

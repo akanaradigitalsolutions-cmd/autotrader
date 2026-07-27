@@ -95,7 +95,11 @@ async def run() -> None:
     parser = SignalParser(allowed_symbol=settings.symbol)
     journal = TradeJournal(settings.trades_log_file)
     monitor = PositionMonitor(
-        broker, notify=lambda text: alerter.alert("breakeven", text), journal=journal
+        broker,
+        notify=lambda text: alerter.alert("breakeven", text),
+        journal=journal,
+        trailing_activate_pips=settings.trailing_activate_pips,
+        trailing_distance_pips=settings.trailing_distance_pips,
     )
     engine = TradingEngine(
         settings, parser, broker,

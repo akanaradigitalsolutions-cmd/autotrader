@@ -39,10 +39,15 @@ async def build_status_report(
         if settings.daily_loss_limit_percent > 0
         else "off"
     )
+    trailing = (
+        f"{settings.trailing_activate_pips:.0f}/{settings.trailing_distance_pips:.0f}p"
+        if settings.trailing_activate_pips > 0
+        else "off"
+    )
     guards = (
         f"conflict={'on' if settings.prevent_opposite_positions else 'off'} "
         f"breakeven={'on' if settings.breakeven_after_tp1 else 'off'} "
-        f"daily_loss={daily_loss}"
+        f"daily_loss={daily_loss} trail={trailing}"
     )
 
     if engine.last_signal_at is None:
