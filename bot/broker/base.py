@@ -34,6 +34,10 @@ class ExecutionClient(ABC):
         """Move an open position's stop loss. Default: unsupported (False)."""
         return False
 
+    async def close_position(self, position_id: str) -> bool:
+        """Close an open position at market. Default: unsupported (False)."""
+        return False
+
     async def get_account_balance(self) -> Optional[float]:
         """Realized account balance, or None if the backend can't report it."""
         return None

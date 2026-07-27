@@ -71,6 +71,10 @@ class Settings(BaseSettings):
     # a signal below this ratio is flagged as low quality (TP1 nearer than
     # the stop). Monitoring only - it does not block the trade.
     min_reward_risk: float = 1.0
+    # Honour channel cancellations ("don't trade it", "cancel", "no trade"):
+    # skip a not-yet-opened signal and close any position already opened for
+    # the cancelled signal (matched by its price levels).
+    honor_cancellations: bool = True
 
     # Logging
     log_level: str = "INFO"

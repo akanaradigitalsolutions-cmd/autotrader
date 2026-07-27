@@ -209,6 +209,45 @@ class Mt5LocalExecutionClient(ExecutionClient):
             signal=signal, dry_run=False,
         )
 
+    async def close_position(self, position_id: str) -> bool:
+        return await asyncio.to_thread(self._close_sync, position_id)
+
+    def _close_sync(self, position_id: str) -> bool:
+        ticket = int(position_id)
+        positions = mt5.positions_get(ticket=ticket)
+        if not positions:
+            return True  # already closed - nothing to do
+        pos = positions[0]
+        tick = mt5.symbol_info_tick(pos.symbol)
+        if tick is None:
+            logger.error("Cannot close %s: no price for %s", position_id, pos.symbol)
+            return False
+        if pos.type == mt5.POSITION_TYPE_BUY:
+            close_type, price = mt5.ORDER_TYPE_SELL, float(tick.bid)
+        else:
+            close_type, price = mt5.ORDER_TYPE_BUY, float(tick.ask)
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": pos.symbol,
+            "position": ticket,
+            "volume": float(pos.volume),
+            "type": close_type,
+            "price": price,
+            "deviation": DEVIATION_POINTS,
+            "magic": MAGIC_NUMBER,
+            "comment": "autotrader-close",
+        }
+        result = self._send_with_filling_fallback(
+            request, (mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, None)
+        )
+        if result is not None and result.retcode == mt5.TRADE_RETCODE_DONE:
+            return True
+        logger.error(
+            "Close failed for %s: %s",
+            position_id, getattr(result, "comment", None) or mt5.last_error(),
+        )
+        return False
+
     @staticmethod
     def _send_with_filling_fallback(request: dict, filling_candidates: tuple):
         """Brokers disagree on the required order filling mode; walk the

@@ -108,6 +108,14 @@ class MetaApiExecutionClient(ExecutionClient):
             logger.exception("Modify SL failed for %s", position_id)
             return False
 
+    async def close_position(self, position_id: str) -> bool:
+        try:
+            await self._connection.close_position(position_id)
+            return True
+        except Exception:
+            logger.exception("Close failed for %s", position_id)
+            return False
+
     async def get_current_price(self, symbol: str) -> tuple[float, float]:
         price = await self._connection.get_symbol_price(symbol)
         return float(price["bid"]), float(price["ask"])

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, Optional
 
@@ -26,6 +27,17 @@ BROKER_CALL_TIMEOUT_SECONDS = 30
 EXECUTE_ATTEMPTS = 3
 RETRY_DELAY_SECONDS = 5
 RECONNECT_TIMEOUT_SECONDS = 60
+# How long an opened signal stays cancellable, and how long a cancellation
+# blocks the same signal from being (re-)traded.
+CANCEL_WINDOW = timedelta(hours=6)
+
+# Phrases a channel uses to call off a signal. Kept specific to avoid
+# mistaking normal signal wording for a cancellation.
+CANCEL_PATTERN = re.compile(
+    r"do\s*n[’'`]?t\s*trade|do\s+not\s+trade|no\s+trade|\bcancel"
+    r"|skip\s+(this|it)|ignore\s+(this|it)|invalid\s+signal|do\s*n[’'`]?t\s+take",
+    re.IGNORECASE,
+)
 
 
 class TradingEngine:
@@ -49,9 +61,18 @@ class TradingEngine:
         self.last_signal_summary: Optional[str] = None
         self.last_signal_at: Optional[datetime] = None
         self._recent_signals: dict[tuple, datetime] = {}
+        # signal fingerprint -> (opened_at, [position ids]) for cancellation.
+        self._opened: dict[tuple, tuple[datetime, list[str]]] = {}
+        # signal fingerprint -> cancelled_at, so a cancelled signal isn't
+        # (re-)traded if it arrives again within the window.
+        self._cancelled: dict[tuple, datetime] = {}
         self._daily_loss = DailyLossGuard(broker, settings.daily_loss_limit_percent)
 
     async def handle_message(self, text: str) -> None:
+        if self.settings.honor_cancellations and CANCEL_PATTERN.search(text):
+            await self._handle_cancellation(text)
+            return
+
         signal = self.parser.parse(text)
         if signal is None:
             logger.debug("Message did not match a tradable signal, ignoring")
@@ -76,6 +97,13 @@ class TradingEngine:
         )
 
         if self._is_duplicate(signal):
+            return
+
+        if self._is_cancelled(signal):
+            logger.warning(
+                "Skipping signal the channel already cancelled: %s",
+                self.last_signal_summary,
+            )
             return
 
         if signal.stop_loss is None and self.settings.require_stop_loss:
@@ -170,6 +198,91 @@ class TradingEngine:
 
         await self._report_failed_signal()
 
+    @staticmethod
+    def _fingerprint(signal: TradeSignal) -> tuple:
+        return (
+            signal.direction, signal.symbol, signal.entry_low, signal.entry_high,
+            signal.stop_loss, tuple(signal.take_profits),
+        )
+
+    def _is_cancelled(self, signal: TradeSignal) -> bool:
+        cancelled_at = self._cancelled.get(self._fingerprint(signal))
+        return (
+            cancelled_at is not None
+            and datetime.now(timezone.utc) - cancelled_at < CANCEL_WINDOW
+        )
+
+    async def _handle_cancellation(self, text: str) -> None:
+        signal = self.parser.parse(text)
+        now = datetime.now(timezone.utc)
+        closed: list[str] = []
+
+        if signal is not None:
+            fp = self._fingerprint(signal)
+            self._cancelled[fp] = now  # block (re-)trading this signal too
+            record = self._opened.pop(fp, None)
+            if record is not None:
+                _, position_ids = record
+                for pid in position_ids:
+                    if await self._close_position(pid):
+                        closed.append(pid)
+            logger.warning(
+                "Cancellation received (%s %s) - closed %d open position(s)",
+                signal.direction, signal.symbol, len(closed),
+            )
+        else:
+            logger.warning(
+                "Cancellation message with no matchable signal levels: %.60s", text
+            )
+
+        if self.notify is not None:
+            if closed:
+                msg = (
+                    f"🛑 Channel said DON'T TRADE - closed {len(closed)} open "
+                    "position(s) for that signal."
+                )
+            elif signal is not None:
+                msg = (
+                    "🛑 Channel said DON'T TRADE - no matching open position "
+                    "(already closed, or it was never opened). It won't be traded."
+                )
+            else:
+                msg = (
+                    "🛑 Channel sent a cancellation I couldn't match to a signal - "
+                    "please check MT5 manually."
+                )
+            try:
+                await self.notify(msg)
+            except Exception:
+                logger.exception("Failed to send cancellation alert")
+
+    async def _close_position(self, position_id: str) -> bool:
+        try:
+            return await asyncio.wait_for(
+                self.broker.close_position(position_id), timeout=BROKER_CALL_TIMEOUT_SECONDS
+            )
+        except asyncio.CancelledError:
+            if externally_cancelled():
+                raise
+            logger.warning("Close of %s cancelled by a broker reconnect", position_id)
+            return False
+        except Exception:
+            logger.exception("Failed to close position %s", position_id)
+            return False
+
+    def _record_opened(self, signal: TradeSignal, placed_ids: list[str]) -> None:
+        ids = [i for i in placed_ids if i]
+        if not ids:
+            return
+        now = datetime.now(timezone.utc)
+        self._opened[self._fingerprint(signal)] = (now, ids)
+        self._opened = {
+            fp: rec for fp, rec in self._opened.items() if now - rec[0] < CANCEL_WINDOW
+        }
+        self._cancelled = {
+            fp: ts for fp, ts in self._cancelled.items() if now - ts < CANCEL_WINDOW
+        }
+
     def _is_duplicate(self, signal: TradeSignal) -> bool:
         """True when a signal with identical levels was traded recently.
 
@@ -181,10 +294,7 @@ class TradingEngine:
         if window <= timedelta(0):
             return False
 
-        fingerprint = (
-            signal.direction, signal.symbol, signal.entry_low, signal.entry_high,
-            signal.stop_loss, tuple(signal.take_profits),
-        )
+        fingerprint = self._fingerprint(signal)
         now = datetime.now(timezone.utc)
         last_seen = self._recent_signals.get(fingerprint)
         if last_seen is not None and now - last_seen < window:
@@ -321,6 +431,10 @@ class TradingEngine:
             else:
                 logger.error("Trade %d/%d failed: %s", i, len(trades_to_place), result.message)
                 state["order_failed"] = True
+
+        # Remember which positions this signal opened, so a later "don't
+        # trade it" from the channel can close exactly these.
+        self._record_opened(signal, placed_ids)
 
         # Only market fills (entry_price is None) are breakeven-managed; a
         # pending order isn't a position yet, so there's no ticket to move.

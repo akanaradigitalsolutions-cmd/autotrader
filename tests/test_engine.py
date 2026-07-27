@@ -19,6 +19,7 @@ class FakeBroker:
         self.positions: list[OpenPosition] = []
         self.balance: float = 1000.0
         self.sl_modifications: list[tuple[str, float]] = []
+        self.closed: list[str] = []
 
     async def connect(self) -> None:
         pass
@@ -37,6 +38,10 @@ class FakeBroker:
 
     async def modify_stop_loss(self, position_id: str, stop_loss: float) -> bool:
         self.sl_modifications.append((position_id, stop_loss))
+        return True
+
+    async def close_position(self, position_id: str) -> bool:
+        self.closed.append(position_id)
         return True
 
     async def get_current_price(self, symbol: str) -> tuple[float, float]:
@@ -248,6 +253,50 @@ async def test_breakeven_not_registered_for_pending_orders():
     await engine.handle_message(SELL_SIGNAL)
 
     assert monitor._managed == []  # pending orders aren't positions yet
+
+
+@pytest.mark.asyncio
+async def test_cancellation_closes_the_positions_opened_for_that_signal():
+    broker = FakeBroker(bid=4057, ask=4057)  # in the 4055-59 sell zone
+    engine = TradingEngine(make_settings(), SignalParser(), broker)
+
+    await engine.handle_message("gold sell 4055-59\nsl 4067\ntp 4050\ntp 4034\ntp 3955")
+    assert len(broker.placed_orders) >= 1
+
+    # The channel then quotes the same signal and says don't trade it.
+    await engine.handle_message(
+        "gold sell 4055-59 sl 4067 tp 4050 tp 4034 tp 3955\ndon't trade it"
+    )
+
+    assert len(broker.closed) == len(broker.placed_orders)  # every position closed
+
+
+@pytest.mark.asyncio
+async def test_cancellation_arriving_first_blocks_the_signal():
+    broker = FakeBroker(bid=4057, ask=4057)
+    engine = TradingEngine(make_settings(), SignalParser(), broker)
+
+    # "don't trade it" seen before the signal is ever executed.
+    await engine.handle_message(
+        "gold sell 4055-59 sl 4067 tp 4050 tp 4034 tp 3955\ndon't trade it"
+    )
+    await engine.handle_message("gold sell 4055-59\nsl 4067\ntp 4050\ntp 4034\ntp 3955")
+
+    assert broker.placed_orders == []  # never opened
+
+
+@pytest.mark.asyncio
+async def test_cancellation_of_a_different_signal_does_not_close_positions():
+    broker = FakeBroker(bid=4057, ask=4057)
+    engine = TradingEngine(make_settings(), SignalParser(), broker)
+
+    await engine.handle_message("gold sell 4055-59\nsl 4067\ntp 4050\ntp 4034\ntp 3955")
+    # Cancellation quotes a DIFFERENT signal (different levels).
+    await engine.handle_message(
+        "gold sell 4061-65 sl 4075 tp 4054 tp 4041 tp 3955\ndon't trade it"
+    )
+
+    assert broker.closed == []  # the open position is left alone
 
 
 @pytest.mark.asyncio
