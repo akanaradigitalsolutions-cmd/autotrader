@@ -79,6 +79,8 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = "INFO"
     log_file: str = "logs/autotrader.log"
+    # CSV journal of every trade (open + close P/L) for the /report command.
+    trades_log_file: str = "logs/trades.csv"
 
     @model_validator(mode="after")
     def _default_broker_symbol(self) -> "Settings":

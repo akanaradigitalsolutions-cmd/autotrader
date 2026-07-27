@@ -14,6 +14,7 @@ from bot.notifier import Alerter
 from bot.position_monitor import PositionMonitor
 from bot.signal_parser import SignalParser
 from bot.telegram_listener import TelegramListener
+from bot.trade_journal import TradeJournal
 
 logger = logging.getLogger(__name__)
 
@@ -92,18 +93,20 @@ async def run() -> None:
         sys.exit(1)
 
     parser = SignalParser(allowed_symbol=settings.symbol)
+    journal = TradeJournal(settings.trades_log_file)
     monitor = PositionMonitor(
-        broker, notify=lambda text: alerter.alert("breakeven", text)
+        broker, notify=lambda text: alerter.alert("breakeven", text), journal=journal
     )
     engine = TradingEngine(
         settings, parser, broker,
         notify=lambda text: alerter.alert("trade-failed", text),
         position_monitor=monitor,
         risk_notify=lambda text: alerter.alert("risk-warning", text),
+        journal=journal,
     )
 
     start_time = time.monotonic()
-    command_handler = CommandHandler(settings, broker, engine, start_time)
+    command_handler = CommandHandler(settings, broker, engine, start_time, journal=journal)
 
     # Moves runner positions to breakeven after their TP1 hits.
     monitor_task = asyncio.create_task(monitor.run())

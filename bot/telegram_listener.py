@@ -10,7 +10,7 @@ from bot.aio import externally_cancelled
 
 logger = logging.getLogger(__name__)
 
-MessageHandler = Callable[[str], Awaitable[None]]
+MessageHandler = Callable[[str, Optional[int]], Awaitable[None]]
 CommandHandler = Callable[[str], Awaitable[str]]
 
 # The watchdog makes a real Telegram API call on a fixed interval. Telethon
@@ -114,7 +114,7 @@ class TelegramListener:
                 )
                 return
             logger.debug("Received message from %s: %s", event.chat_id, text)
-            await on_message(text)
+            await on_message(text, event.chat_id)
 
         if on_command is not None:
             # Commands are only accepted in Saved Messages ("me") - the chat

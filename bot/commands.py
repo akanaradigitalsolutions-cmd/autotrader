@@ -18,6 +18,7 @@ CANCEL_WORDS = {"no", "n", "/cancel"}
 USAGE = (
     "Unknown command. Available:\n"
     "/status\n"
+    "/report\n"
     "/set lot <value>\n"
     "/set trades <value>"
 )
@@ -47,12 +48,14 @@ class CommandHandler:
         engine: TradingEngine,
         start_time: float,
         env_path: str = ".env",
+        journal=None,
     ):
         self.settings = settings
         self.broker = broker
         self.engine = engine
         self.start_time = start_time
         self.env_path = Path(env_path)
+        self.journal = journal
         self._pending: PendingChange | None = None
 
     async def handle(self, text: str) -> str:
@@ -74,6 +77,11 @@ class CommandHandler:
             return await build_status_report(
                 self.settings, self.broker, self.engine, self.start_time
             )
+
+        if lower == "/report":
+            if self.journal is None:
+                return "Trade journal is not enabled."
+            return self.journal.summary()
 
         if lower.startswith("/set"):
             match = SET_PATTERN.match(stripped)

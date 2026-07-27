@@ -51,6 +51,7 @@ class TradingEngine:
         notify: Optional[Callable[[str], Awaitable[None]]] = None,
         position_monitor: Optional[PositionMonitor] = None,
         risk_notify: Optional[Callable[[str], Awaitable[None]]] = None,
+        journal=None,
     ):
         self.settings = settings
         self.parser = parser
@@ -58,6 +59,7 @@ class TradingEngine:
         self.notify = notify
         self.risk_notify = risk_notify
         self.position_monitor = position_monitor
+        self.journal = journal
         self.last_signal_summary: Optional[str] = None
         self.last_signal_at: Optional[datetime] = None
         self._recent_signals: dict[tuple, datetime] = {}
@@ -68,7 +70,7 @@ class TradingEngine:
         self._cancelled: dict[tuple, datetime] = {}
         self._daily_loss = DailyLossGuard(broker, settings.daily_loss_limit_percent)
 
-    async def handle_message(self, text: str) -> None:
+    async def handle_message(self, text: str, source: Optional[int] = None) -> None:
         if self.settings.honor_cancellations and CANCEL_PATTERN.search(text):
             await self._handle_cancellation(text)
             return
@@ -155,7 +157,8 @@ class TradingEngine:
         for attempt in range(1, EXECUTE_ATTEMPTS + 1):
             try:
                 await asyncio.wait_for(
-                    self._execute_signal(signal, state), timeout=BROKER_CALL_TIMEOUT_SECONDS
+                    self._execute_signal(signal, state, source, rr),
+                    timeout=BROKER_CALL_TIMEOUT_SECONDS,
                 )
                 if state.get("order_failed"):
                     await self._report_failed_signal()
@@ -270,6 +273,22 @@ class TradingEngine:
             logger.exception("Failed to close position %s", position_id)
             return False
 
+    def _journal_opened(self, signal, placed_ids, source, rr, volume) -> None:
+        ids = [i for i in placed_ids if i]
+        if not ids:
+            return
+        if self.journal is not None:
+            for pid in ids:
+                self.journal.record_open(
+                    position_id=pid, source=source, direction=signal.direction,
+                    symbol=self.settings.broker_symbol, entry=signal.entry,
+                    sl=signal.stop_loss, tp1=signal.primary_take_profit, rr=rr,
+                    volume=volume,
+                )
+        if self.position_monitor is not None:
+            for pid in ids:
+                self.position_monitor.track_for_journal(pid, self.settings.broker_symbol)
+
     def _record_opened(self, signal: TradeSignal, placed_ids: list[str]) -> None:
         ids = [i for i in placed_ids if i]
         if not ids:
@@ -340,7 +359,13 @@ class TradingEngine:
         except Exception:
             logger.exception("Failed to send trade-failure alert")
 
-    async def _execute_signal(self, signal: TradeSignal, state: Optional[dict] = None) -> None:
+    async def _execute_signal(
+        self,
+        signal: TradeSignal,
+        state: Optional[dict] = None,
+        source: Optional[int] = None,
+        rr: Optional[float] = None,
+    ) -> None:
         if state is None:
             state = {"order_attempted": False}
         volume = resolve_lot_size(self.settings)
@@ -435,6 +460,7 @@ class TradingEngine:
         # Remember which positions this signal opened, so a later "don't
         # trade it" from the channel can close exactly these.
         self._record_opened(signal, placed_ids)
+        self._journal_opened(signal, placed_ids, source, rr, volume)
 
         # Only market fills (entry_price is None) are breakeven-managed; a
         # pending order isn't a position yet, so there's no ticket to move.

@@ -93,7 +93,7 @@ async def test_fresh_message_is_handled_but_stale_is_dropped(monkeypatch):
     listener = make_listener(monkeypatch)
     received = []
 
-    async def on_message(text):
+    async def on_message(text, source=None):
         received.append(text)
 
     await listener.start(on_message)
@@ -113,7 +113,7 @@ async def test_fresh_message_is_handled_but_stale_is_dropped(monkeypatch):
 async def test_command_failure_still_sends_a_reply(monkeypatch):
     listener = make_listener(monkeypatch)
 
-    async def on_message(text):
+    async def on_message(text, source=None):
         pass
 
     async def on_command(text):

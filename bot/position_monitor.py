@@ -42,11 +42,19 @@ class PositionMonitor:
         broker: ExecutionClient,
         notify: Optional[Callable[[str], Awaitable[None]]] = None,
         interval: int = CHECK_INTERVAL_SECONDS,
+        journal=None,
     ):
         self._broker = broker
         self._notify = notify
         self._interval = interval
+        self._journal = journal
         self._managed: list[ManagedTrade] = []
+        # position id -> symbol, for detecting closes to journal.
+        self._journal_tracked: dict[str, str] = {}
+
+    def track_for_journal(self, position_id: str, symbol: str) -> None:
+        if self._journal is not None and position_id:
+            self._journal_tracked[position_id] = symbol
 
     def register(
         self, symbol: str, direction: Direction, tp1_id: str, runner_ids: list[str]
@@ -75,13 +83,16 @@ class PositionMonitor:
                 logger.exception("Position monitor cycle failed")
 
     async def check_once(self) -> None:
-        if not self._managed:
+        if not self._managed and not self._journal_tracked:
             return
 
+        symbols = {m.symbol for m in self._managed} | set(self._journal_tracked.values())
         open_by_symbol: dict[str, dict[str, object]] = {}
-        for symbol in {m.symbol for m in self._managed}:
+        for symbol in symbols:
             positions = await self._broker.get_positions(symbol)
             open_by_symbol[symbol] = {p.id: p for p in positions}
+
+        await self._journal_closed_positions(open_by_symbol)
 
         still_managed: list[ManagedTrade] = []
         for m in self._managed:
@@ -98,6 +109,21 @@ class PositionMonitor:
             still_managed.append(m)
 
         self._managed = still_managed
+
+    async def _journal_closed_positions(self, open_by_symbol) -> None:
+        if self._journal is None or not self._journal_tracked:
+            return
+        for pid, symbol in list(self._journal_tracked.items()):
+            if pid in open_by_symbol.get(symbol, {}):
+                continue  # still open
+            # Closed since last check - record its realized P/L.
+            try:
+                profit = await self._broker.get_closed_profit(pid)
+            except Exception:
+                logger.exception("Could not read closed profit for %s", pid)
+                profit = None
+            self._journal.record_close(pid, profit)
+            del self._journal_tracked[pid]
 
     async def _move_runners_to_breakeven(self, m, open_map, open_runners) -> None:
         moved = 0

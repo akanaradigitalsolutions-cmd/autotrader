@@ -38,6 +38,14 @@ class ExecutionClient(ABC):
         """Close an open position at market. Default: unsupported (False)."""
         return False
 
+    async def get_closed_profit(self, position_id: str) -> Optional[float]:
+        """Realized net profit of a closed position, or None if unknown.
+
+        Used only for the trade journal; a None result just leaves that
+        trade's outcome blank in the report.
+        """
+        return None
+
     async def get_account_balance(self) -> Optional[float]:
         """Realized account balance, or None if the backend can't report it."""
         return None

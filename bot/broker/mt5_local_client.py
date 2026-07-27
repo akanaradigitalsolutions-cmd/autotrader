@@ -209,6 +209,28 @@ class Mt5LocalExecutionClient(ExecutionClient):
             signal=signal, dry_run=False,
         )
 
+    async def get_closed_profit(self, position_id: str) -> Optional[float]:
+        return await asyncio.to_thread(self._closed_profit_sync, position_id)
+
+    @staticmethod
+    def _closed_profit_sync(position_id: str) -> Optional[float]:
+        from datetime import datetime, timedelta
+
+        now = datetime.now()
+        deals = mt5.history_deals_get(
+            now - timedelta(days=30), now + timedelta(days=1), position=int(position_id)
+        )
+        if not deals:
+            return None
+        # Net of the position's deals: entry deal has profit 0, exit deal
+        # carries the realized P/L; include swap and commission.
+        return float(
+            sum(
+                d.profit + getattr(d, "swap", 0.0) + getattr(d, "commission", 0.0)
+                for d in deals
+            )
+        )
+
     async def close_position(self, position_id: str) -> bool:
         return await asyncio.to_thread(self._close_sync, position_id)
 
