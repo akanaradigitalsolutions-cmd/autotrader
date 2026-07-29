@@ -347,7 +347,8 @@ async def test_low_reward_risk_signal_warns_but_still_trades():
         warnings.append(text)
 
     engine = TradingEngine(
-        make_settings(), SignalParser(), broker, risk_notify=risk_notify
+        make_settings(skip_reward_risk_below=0.0), SignalParser(), broker,
+        risk_notify=risk_notify,
     )
 
     await engine.handle_message(
@@ -356,7 +357,57 @@ async def test_low_reward_risk_signal_warns_but_still_trades():
 
     assert len(warnings) == 1
     assert "reward:risk" in warnings[0].lower()
-    assert len(broker.placed_orders) >= 1  # warned, not blocked
+    assert len(broker.placed_orders) >= 1  # warned, not blocked (filter off)
+
+
+@pytest.mark.asyncio
+async def test_rr_filter_skips_low_reward_risk_signals():
+    # BUY 4139/SL 4129/TP1 4146 -> R:R 0.70, below the 1.0 filter.
+    broker = FakeBroker(bid=4139, ask=4139)
+    skipped = []
+
+    async def risk_notify(text):
+        skipped.append(text)
+
+    engine = TradingEngine(
+        make_settings(skip_reward_risk_below=1.0), SignalParser(), broker,
+        risk_notify=risk_notify,
+    )
+
+    await engine.handle_message(
+        "GOLD BUY NOW : 4139\nSL : 4129\nTP 1st: 70PIPS\nTP 2nd: 150PIPS"
+    )
+
+    assert broker.placed_orders == []  # skipped, not traded
+    assert len(skipped) == 1
+    assert "Skipped" in skipped[0]
+
+
+@pytest.mark.asyncio
+async def test_rr_filter_allows_good_reward_risk_signals():
+    broker = FakeBroker(bid=4120, ask=4120)
+    engine = TradingEngine(
+        make_settings(skip_reward_risk_below=1.0), SignalParser(), broker
+    )
+
+    # SELL 4118-22/SL 4128/TP1 4099 -> R:R ~2.6, above the filter.
+    await engine.handle_message("gold sell 4118-22\nsl 4128\ntp 4099\ntp 4090")
+
+    assert len(broker.placed_orders) >= 1
+
+
+@pytest.mark.asyncio
+async def test_rr_filter_disabled_trades_everything():
+    broker = FakeBroker(bid=4139, ask=4139)
+    engine = TradingEngine(
+        make_settings(skip_reward_risk_below=0.0), SignalParser(), broker
+    )
+
+    await engine.handle_message(
+        "GOLD BUY NOW : 4139\nSL : 4129\nTP 1st: 70PIPS\nTP 2nd: 150PIPS"
+    )
+
+    assert len(broker.placed_orders) >= 1  # filter off - low R:R still trades
 
 
 @pytest.mark.asyncio

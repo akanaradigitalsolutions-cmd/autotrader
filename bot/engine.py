@@ -139,6 +139,26 @@ class TradingEngine:
                     logger.exception("Failed to send inconsistent-signal alert")
             return
 
+        if (
+            rr is not None
+            and self.settings.skip_reward_risk_below > 0
+            and rr < self.settings.skip_reward_risk_below
+        ):
+            logger.warning(
+                "SKIPPING signal below R:R filter (%.2f < %.2f): %s",
+                rr, self.settings.skip_reward_risk_below, self.last_signal_summary,
+            )
+            if self.risk_notify is not None:
+                try:
+                    await self.risk_notify(
+                        f"⛔ Skipped a low reward:risk signal ({rr_text} < "
+                        f"{self.settings.skip_reward_risk_below:.2f}) - TP1 too close to "
+                        f"the stop to be worth it:\n{self.last_signal_summary}"
+                    )
+                except Exception:
+                    logger.exception("Failed to send R:R-filter alert")
+            return
+
         if rr is not None and rr < self.settings.min_reward_risk:
             logger.warning(
                 "LOW reward:risk (%.2f < %.2f) - TP1 is nearer than the stop: %s",
