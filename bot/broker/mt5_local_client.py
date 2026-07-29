@@ -216,18 +216,27 @@ class Mt5LocalExecutionClient(ExecutionClient):
     def _closed_profit_sync(position_id: str) -> Optional[float]:
         from datetime import datetime, timedelta
 
+        ticket = int(position_id)
         now = datetime.now()
-        deals = mt5.history_deals_get(
-            now - timedelta(days=30), now + timedelta(days=1), position=int(position_id)
-        )
+        deals = mt5.history_deals_get(now - timedelta(days=60), now + timedelta(days=1))
         if not deals:
             return None
-        # Net of the position's deals: entry deal has profit 0, exit deal
-        # carries the realized P/L; include swap and commission.
+        # Filter to THIS position's deals in Python - the position= kwarg is
+        # unreliable, and without this the sum picked up every deal in the
+        # window, including balance/deposit operations (which carry a large
+        # positive "profit" and made every trade look like a huge win).
+        balance_type = getattr(mt5, "DEAL_TYPE_BALANCE", 2)
+        relevant = [
+            d for d in deals
+            if getattr(d, "position_id", None) == ticket and d.type != balance_type
+        ]
+        if not relevant:
+            return None
+        # Entry deal has profit 0; exit deal(s) carry the realized P/L.
         return float(
             sum(
                 d.profit + getattr(d, "swap", 0.0) + getattr(d, "commission", 0.0)
-                for d in deals
+                for d in relevant
             )
         )
 
