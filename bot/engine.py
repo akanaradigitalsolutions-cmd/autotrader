@@ -33,6 +33,14 @@ CANCEL_WINDOW = timedelta(hours=6)
 
 # Phrases a channel uses to call off a signal. Kept specific to avoid
 # mistaking normal signal wording for a cancellation.
+def _ema(values: list[float], period: int) -> float:
+    k = 2.0 / (period + 1)
+    ema = values[0]
+    for v in values[1:]:
+        ema = v * k + ema * (1 - k)
+    return ema
+
+
 CANCEL_PATTERN = re.compile(
     r"do\s*n[’'`]?t\s*trade|do\s+not\s+trade|no\s+trade|\bcancel"
     r"|skip\s+(this|it)|ignore\s+(this|it)|invalid\s+signal|do\s*n[’'`]?t\s+take",
@@ -172,6 +180,28 @@ class TradingEngine:
                     )
                 except Exception:
                     logger.exception("Failed to send risk-warning alert")
+
+        trend_reason = await self._trend_conflict(signal)
+        if trend_reason is not None:
+            if self.settings.trend_filter.lower() == "on":
+                logger.warning(
+                    "TREND FILTER: skipping %s %s - %s",
+                    signal.direction, signal.symbol, trend_reason,
+                )
+                if self.risk_notify is not None:
+                    try:
+                        await self.risk_notify(
+                            f"⛔ Skipped {signal.direction.value} against the trend "
+                            f"({trend_reason}):\n{self.last_signal_summary}"
+                        )
+                    except Exception:
+                        logger.exception("Failed to send trend-filter alert")
+                return
+            # shadow mode: log what it *would* skip, but still trade.
+            logger.warning(
+                "TREND FILTER (shadow) would skip %s %s - %s",
+                signal.direction, signal.symbol, trend_reason,
+            )
 
         state = {"order_attempted": False}
         for attempt in range(1, EXECUTE_ATTEMPTS + 1):
@@ -526,6 +556,32 @@ class TradingEngine:
                 return f"SELL take-profit not below entry {entry}: {tps}"
             if entry is None and sl is not None and any(tp >= sl for tp in tps):
                 return f"SELL take-profit not below stop {sl}: {tps}"
+        return None
+
+    async def _trend_conflict(self, signal: TradeSignal) -> Optional[str]:
+        """Reason string if the signal trades against the trend, else None.
+
+        Trend = last close vs an EMA on the configured timeframe. A BUY below
+        the EMA (downtrend) or a SELL above it (uptrend) is counter-trend.
+        """
+        if self.settings.trend_filter.lower() == "off":
+            return None
+        period = self.settings.trend_ema_period
+        try:
+            closes = await self.broker.get_closes(
+                self.settings.broker_symbol, self.settings.trend_timeframe, period + 5
+            )
+        except Exception:
+            logger.exception("Trend filter: could not read candles")
+            return None
+        if len(closes) < period:
+            return None  # not enough history - don't filter
+        ema = _ema(closes, period)
+        price = closes[-1]
+        if signal.direction == Direction.BUY and price < ema:
+            return f"price {price:.1f} below EMA{period} {ema:.1f} (downtrend)"
+        if signal.direction == Direction.SELL and price > ema:
+            return f"price {price:.1f} above EMA{period} {ema:.1f} (uptrend)"
         return None
 
     async def _has_opposite_position(self, direction: Direction) -> bool:

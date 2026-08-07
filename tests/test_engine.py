@@ -20,6 +20,7 @@ class FakeBroker:
         self.balance: float = 1000.0
         self.sl_modifications: list[tuple[str, float]] = []
         self.closed: list[str] = []
+        self.closes: list[float] = []  # candle closes for the trend filter
 
     async def connect(self) -> None:
         pass
@@ -46,6 +47,9 @@ class FakeBroker:
 
     async def get_current_price(self, symbol: str) -> tuple[float, float]:
         return self.bid, self.ask
+
+    async def get_closes(self, symbol, timeframe="H1", count=100):
+        return list(self.closes)
 
     async def place_order(
         self, signal: TradeSignal, volume: float, entry_price: Optional[float] = None
@@ -297,6 +301,44 @@ async def test_cancellation_of_a_different_signal_does_not_close_positions():
     )
 
     assert broker.closed == []  # the open position is left alone
+
+
+UPTREND_CLOSES = [float(x) for x in range(4000, 4100)]  # rising -> price > EMA
+
+
+@pytest.mark.asyncio
+async def test_trend_filter_shadow_logs_but_still_trades():
+    broker = FakeBroker(bid=4099, ask=4099)
+    broker.closes = UPTREND_CLOSES  # uptrend
+    engine = TradingEngine(make_settings(trend_filter="shadow"), SignalParser(), broker)
+
+    # A SELL in an uptrend is counter-trend, but shadow mode still trades it.
+    await engine.handle_message("gold sell 4098-4100\nsl 4110\ntp 4090\ntp 4080")
+
+    assert len(broker.placed_orders) >= 1
+
+
+@pytest.mark.asyncio
+async def test_trend_filter_on_skips_counter_trend_signal():
+    broker = FakeBroker(bid=4099, ask=4099)
+    broker.closes = UPTREND_CLOSES
+    engine = TradingEngine(make_settings(trend_filter="on"), SignalParser(), broker)
+
+    await engine.handle_message("gold sell 4098-4100\nsl 4110\ntp 4090\ntp 4080")
+
+    assert broker.placed_orders == []  # counter-trend sell blocked
+
+
+@pytest.mark.asyncio
+async def test_trend_filter_on_allows_with_trend_signal():
+    broker = FakeBroker(bid=4099, ask=4099)
+    broker.closes = UPTREND_CLOSES
+    engine = TradingEngine(make_settings(trend_filter="on"), SignalParser(), broker)
+
+    # A BUY in an uptrend is with the trend - allowed.
+    await engine.handle_message("gold buy 4098-4100\nsl 4088\ntp 4110\ntp 4120")
+
+    assert len(broker.placed_orders) >= 1
 
 
 @pytest.mark.asyncio

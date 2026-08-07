@@ -46,6 +46,13 @@ class ExecutionClient(ABC):
         """
         return None
 
+    async def get_closes(
+        self, symbol: str, timeframe: str = "H1", count: int = 100
+    ) -> list[float]:
+        """Recent candle close prices (oldest first). Default empty; used by
+        the trend filter. Real backends override."""
+        return []
+
     async def get_account_balance(self) -> Optional[float]:
         """Realized account balance, or None if the backend can't report it."""
         return None

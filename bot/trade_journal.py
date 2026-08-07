@@ -57,6 +57,30 @@ class TradeJournal:
     def _now() -> str:
         return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
+    def open_position_ids_without_close(self) -> dict[str, str]:
+        """{position_id: symbol} for OPEN rows that have no CLOSE row yet.
+
+        On startup the monitor re-tracks these so their closes are recorded
+        even though they were opened in a previous run (the in-memory tracking
+        is lost on restart). Positions still genuinely open stay tracked;
+        already-closed ones get their P/L backfilled on the next check.
+        """
+        if not self._path.exists():
+            return {}
+        opens: dict[str, str] = {}
+        closed: set[str] = set()
+        try:
+            with self._path.open(newline="", encoding="utf-8") as f:
+                for row in csv.DictReader(f):
+                    if row["type"] == "OPEN":
+                        opens[row["position_id"]] = row.get("symbol", "")
+                    elif row["type"] == "CLOSE":
+                        closed.add(row["position_id"])
+        except Exception:
+            logger.exception("Failed to read trade journal for backfill")
+            return {}
+        return {pid: sym for pid, sym in opens.items() if pid not in closed}
+
     def summary(self) -> str:
         if not self._path.exists():
             return "No trades recorded yet."

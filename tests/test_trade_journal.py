@@ -41,6 +41,17 @@ def test_open_without_close_is_counted_but_not_won_or_lost(tmp_path):
     assert "0W/0L" in summary
 
 
+def test_open_without_close_is_listed_for_backfill(tmp_path):
+    j = make_journal(tmp_path)
+    j.record_open("1", -100, Direction.SELL, "XAUUSDm", 4120, 4128, 4099, 2.6, 0.01)
+    j.record_open("2", -100, Direction.BUY, "XAUUSDm", 4139, 4129, 4146, 0.7, 0.01)
+    j.record_close("1", 5.0)  # 1 is closed, 2 is not
+
+    pending = j.open_position_ids_without_close()
+
+    assert pending == {"2": "XAUUSDm"}
+
+
 def test_writing_never_raises_on_bad_path(tmp_path):
     # A directory where a file is expected - _append must swallow the error.
     bad = tmp_path / "dir"

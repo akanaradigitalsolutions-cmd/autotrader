@@ -95,6 +95,29 @@ class Mt5LocalExecutionClient(ExecutionClient):
         info = await asyncio.to_thread(mt5.account_info)
         return float(info.balance) if info is not None else None
 
+    async def get_closes(
+        self, symbol: str, timeframe: str = "H1", count: int = 100
+    ) -> list[float]:
+        return await asyncio.to_thread(self._get_closes_sync, symbol, timeframe, count)
+
+    @staticmethod
+    def _get_closes_sync(symbol: str, timeframe: str, count: int) -> list[float]:
+        tf_map = {
+            "M1": getattr(mt5, "TIMEFRAME_M1", 1),
+            "M5": getattr(mt5, "TIMEFRAME_M5", 5),
+            "M15": getattr(mt5, "TIMEFRAME_M15", 15),
+            "M30": getattr(mt5, "TIMEFRAME_M30", 30),
+            "H1": getattr(mt5, "TIMEFRAME_H1", 16385),
+            "H4": getattr(mt5, "TIMEFRAME_H4", 16388),
+            "D1": getattr(mt5, "TIMEFRAME_D1", 16408),
+        }
+        tf = tf_map.get(timeframe.upper(), tf_map["H1"])
+        mt5.symbol_select(symbol, True)
+        rates = mt5.copy_rates_from_pos(symbol, tf, 0, count)
+        if rates is None:
+            return []
+        return [float(r["close"]) for r in rates]
+
     async def modify_stop_loss(self, position_id: str, stop_loss: float) -> bool:
         return await asyncio.to_thread(self._modify_sl_sync, position_id, stop_loss)
 

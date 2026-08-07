@@ -76,6 +76,12 @@ class Settings(BaseSettings):
     # skip signals where TP1 is closer than the stop. A signal with no
     # computable R:R (no entry/stop/TP) is not filtered here.
     skip_reward_risk_below: float = 0.0
+    # Trend filter: skip signals against the higher-timeframe trend (a BUY
+    # below the EMA, or a SELL above it). "off" | "shadow" (only logs what it
+    # would skip, still trades - use this to measure it first) | "on".
+    trend_filter: str = "off"
+    trend_ema_period: int = 50
+    trend_timeframe: str = "H1"
     # Honour channel cancellations ("don't trade it", "cancel", "no trade"):
     # skip a not-yet-opened signal and close any position already opened for
     # the cancelled signal (matched by its price levels).

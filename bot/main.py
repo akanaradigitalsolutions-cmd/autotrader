@@ -112,6 +112,11 @@ async def run() -> None:
     start_time = time.monotonic()
     command_handler = CommandHandler(settings, broker, engine, start_time, journal=journal)
 
+    # Re-track positions opened in a previous run whose close wasn't yet
+    # journaled (restart loses in-memory tracking), so /report P&L is complete.
+    for pid, symbol in journal.open_position_ids_without_close().items():
+        monitor.track_for_journal(pid, symbol or settings.broker_symbol)
+
     # Moves runner positions to breakeven after their TP1 hits.
     monitor_task = asyncio.create_task(monitor.run())
 
