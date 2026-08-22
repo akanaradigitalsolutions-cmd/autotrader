@@ -57,6 +57,11 @@ async def build_status_report(
     trend = f"trend={settings.trend_filter}"
     if settings.trend_filter.lower() != "off":
         trend += f"(EMA{settings.trend_ema_period} {settings.trend_timeframe})"
+    pending_expiry = (
+        f"pending_expiry={settings.pending_order_expiry_minutes}m"
+        if settings.pending_order_expiry_minutes > 0
+        else "pending_expiry=off"
+    )
 
     if engine.last_signal_at is None:
         last_signal = "none yet"
@@ -79,7 +84,7 @@ async def build_status_report(
         f"Trades/signal: {settings.trades_per_signal}\n"
         f"Max open positions: {settings.max_open_positions}\n"
         f"Guards: {guards}\n"
-        f"Filter: {rr_filter} {trend}\n"
+        f"Filter: {rr_filter} {trend} {pending_expiry}\n"
         f"Open positions now: {open_positions}\n"
         f"Uptime: {uptime}\n"
         f"Last signal: {last_signal}"

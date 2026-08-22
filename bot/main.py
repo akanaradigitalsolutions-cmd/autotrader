@@ -100,6 +100,7 @@ async def run() -> None:
         journal=journal,
         trailing_activate_pips=settings.trailing_activate_pips,
         trailing_distance_pips=settings.trailing_distance_pips,
+        pending_expiry_minutes=settings.pending_order_expiry_minutes,
     )
     engine = TradingEngine(
         settings, parser, broker,

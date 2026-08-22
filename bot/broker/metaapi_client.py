@@ -116,6 +116,22 @@ class MetaApiExecutionClient(ExecutionClient):
             logger.exception("Close failed for %s", position_id)
             return False
 
+    async def get_pending_orders(self, symbol: str) -> list[str]:
+        try:
+            orders = await self._connection.get_orders()
+        except Exception:
+            logger.exception("Could not read pending orders")
+            return []
+        return [str(o.get("id")) for o in orders if o.get("symbol") == symbol]
+
+    async def cancel_order(self, order_id: str) -> bool:
+        try:
+            await self._connection.cancel_order(order_id)
+            return True
+        except Exception:
+            logger.exception("Cancel pending order %s failed", order_id)
+            return False
+
     async def get_current_price(self, symbol: str) -> tuple[float, float]:
         price = await self._connection.get_symbol_price(symbol)
         return float(price["bid"]), float(price["ask"])

@@ -82,6 +82,10 @@ class Settings(BaseSettings):
     trend_filter: str = "off"
     trend_ema_period: int = 50
     trend_timeframe: str = "H1"
+    # Cancel a pending (limit) order that hasn't filled within this many
+    # minutes, so a stale signal can't fill hours later into a reversed
+    # market. 0 disables (pending orders stay good-till-cancelled).
+    pending_order_expiry_minutes: int = 0
     # Honour channel cancellations ("don't trade it", "cancel", "no trade"):
     # skip a not-yet-opened signal and close any position already opened for
     # the cancelled signal (matched by its price levels).

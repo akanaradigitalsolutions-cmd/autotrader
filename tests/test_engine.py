@@ -51,6 +51,12 @@ class FakeBroker:
     async def get_closes(self, symbol, timeframe="H1", count=100):
         return list(self.closes)
 
+    async def get_pending_orders(self, symbol):
+        return []
+
+    async def cancel_order(self, order_id):
+        return True
+
     async def place_order(
         self, signal: TradeSignal, volume: float, entry_price: Optional[float] = None
     ) -> ExecutionResult:

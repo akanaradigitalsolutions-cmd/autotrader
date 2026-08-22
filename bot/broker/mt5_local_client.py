@@ -263,6 +263,26 @@ class Mt5LocalExecutionClient(ExecutionClient):
             )
         )
 
+    async def get_pending_orders(self, symbol: str) -> list[str]:
+        raw = await asyncio.to_thread(mt5.orders_get, symbol=symbol)
+        return [str(o.ticket) for o in (raw or ())]
+
+    async def cancel_order(self, order_id: str) -> bool:
+        return await asyncio.to_thread(self._cancel_order_sync, order_id)
+
+    @staticmethod
+    def _cancel_order_sync(order_id: str) -> bool:
+        result = mt5.order_send(
+            {"action": mt5.TRADE_ACTION_REMOVE, "order": int(order_id)}
+        )
+        if result is not None and result.retcode == mt5.TRADE_RETCODE_DONE:
+            return True
+        logger.error(
+            "Cancel pending order %s failed: %s",
+            order_id, getattr(result, "comment", None) or mt5.last_error(),
+        )
+        return False
+
     async def close_position(self, position_id: str) -> bool:
         return await asyncio.to_thread(self._close_sync, position_id)
 

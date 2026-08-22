@@ -53,6 +53,14 @@ class ExecutionClient(ABC):
         the trend filter. Real backends override."""
         return []
 
+    async def get_pending_orders(self, symbol: str) -> list[str]:
+        """Ids of not-yet-filled pending orders for the symbol. Default empty."""
+        return []
+
+    async def cancel_order(self, order_id: str) -> bool:
+        """Cancel a pending order. Default: unsupported (False)."""
+        return False
+
     async def get_account_balance(self) -> Optional[float]:
         """Realized account balance, or None if the backend can't report it."""
         return None

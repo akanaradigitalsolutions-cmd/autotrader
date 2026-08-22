@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 
@@ -47,6 +48,7 @@ class PositionMonitor:
         trailing_activate_pips: float = 0.0,
         trailing_distance_pips: float = 0.0,
         pip_size: float = GOLD_PIP_SIZE,
+        pending_expiry_minutes: int = 0,
     ):
         self._broker = broker
         self._notify = notify
@@ -54,16 +56,24 @@ class PositionMonitor:
         self._journal = journal
         self._activate = trailing_activate_pips * pip_size
         self._distance = trailing_distance_pips * pip_size
+        self._pending_expiry = pending_expiry_minutes
         self._managed: list[ManagedTrade] = []
         # position id -> symbol, for every bot position (close detection +
         # trailing). Independent of the journal so trailing works either way.
         self._tracked: dict[str, str] = {}
         # position id -> best (most favourable) price seen, for trailing.
         self._peak: dict[str, float] = {}
+        # pending order id -> (symbol, placed_at epoch), for expiring stale
+        # limit orders that never filled.
+        self._pending: dict[str, tuple[str, float]] = {}
 
     def track_for_journal(self, position_id: str, symbol: str) -> None:
         if position_id:
             self._tracked[position_id] = symbol
+
+    def track_pending(self, order_id: str, symbol: str) -> None:
+        if order_id:
+            self._pending[order_id] = (symbol, time.time())
 
     def register(
         self, symbol: str, direction: Direction, tp1_id: str, runner_ids: list[str]
@@ -92,16 +102,23 @@ class PositionMonitor:
                 logger.exception("Position monitor cycle failed")
 
     async def check_once(self) -> None:
-        if not self._managed and not self._tracked:
+        if not self._managed and not self._tracked and not self._pending:
             return
 
-        symbols = {m.symbol for m in self._managed} | set(self._tracked.values())
+        symbols = (
+            {m.symbol for m in self._managed}
+            | set(self._tracked.values())
+            | {sym for sym, _ in self._pending.values()}
+        )
         open_by_symbol: dict[str, dict[str, object]] = {}
+        pending_by_symbol: dict[str, set[str]] = {}
         for symbol in symbols:
             positions = await self._broker.get_positions(symbol)
             open_by_symbol[symbol] = {p.id: p for p in positions}
+            pending_by_symbol[symbol] = set(await self._broker.get_pending_orders(symbol))
 
-        await self._reconcile_closed(open_by_symbol)
+        await self._expire_pending_orders(pending_by_symbol)
+        await self._reconcile_closed(open_by_symbol, pending_by_symbol)
         await self._apply_trailing(open_by_symbol)
 
         still_managed: list[ManagedTrade] = []
@@ -120,10 +137,37 @@ class PositionMonitor:
 
         self._managed = still_managed
 
-    async def _reconcile_closed(self, open_by_symbol) -> None:
+    async def _expire_pending_orders(self, pending_by_symbol) -> None:
+        now = time.time()
+        for oid, (symbol, placed_at) in list(self._pending.items()):
+            still_pending = oid in pending_by_symbol.get(symbol, set())
+            if not still_pending:
+                del self._pending[oid]  # filled or already gone
+                continue
+            if self._pending_expiry > 0 and now - placed_at >= self._pending_expiry * 60:
+                if await self._broker.cancel_order(oid):
+                    logger.warning(
+                        "Cancelled stale pending order %s (%.0f min unfilled)",
+                        oid, (now - placed_at) / 60,
+                    )
+                    if self._notify is not None:
+                        try:
+                            await self._notify(
+                                f"⏳ Cancelled a pending order on {symbol} that never "
+                                f"filled within {self._pending_expiry} min - the signal "
+                                "went stale, so it won't fill late into a reversed market."
+                            )
+                        except Exception:
+                            logger.exception("Failed to send pending-expiry alert")
+                del self._pending[oid]
+
+    async def _reconcile_closed(self, open_by_symbol, pending_by_symbol=None) -> None:
+        pending_by_symbol = pending_by_symbol or {}
         for pid, symbol in list(self._tracked.items()):
             if pid in open_by_symbol.get(symbol, {}):
-                continue  # still open
+                continue  # still an open position
+            if pid in pending_by_symbol.get(symbol, set()):
+                continue  # still a pending order waiting to fill - not closed
             # Closed since last check - record its realized P/L if journaling.
             if self._journal is not None:
                 try:

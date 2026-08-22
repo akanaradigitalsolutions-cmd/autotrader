@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 from bot.models import Direction, OpenPosition
@@ -10,9 +12,21 @@ class FakeBroker:
         self.sl_mods: list[tuple[str, float]] = []
         self.closed_profit: dict[str, float] = {}
         self.price: tuple[float, float] = (0.0, 0.0)
+        self.pending: dict[str, list[str]] = {}  # symbol -> [order ids]
+        self.cancelled: list[str] = []
 
     async def get_positions(self, symbol):
         return [p for p in self.positions if p.symbol == symbol]
+
+    async def get_pending_orders(self, symbol):
+        return list(self.pending.get(symbol, []))
+
+    async def cancel_order(self, order_id):
+        self.cancelled.append(order_id)
+        for ids in self.pending.values():
+            if order_id in ids:
+                ids.remove(order_id)
+        return True
 
     async def get_current_price(self, symbol):
         return self.price
@@ -167,6 +181,52 @@ async def test_trailing_only_tightens_never_loosens():
     await monitor.check_once()
 
     assert broker.sl_mods == [("1", 4111.5)]  # only the first, tighter move
+
+
+@pytest.mark.asyncio
+async def test_stale_pending_order_is_cancelled(monkeypatch):
+    broker = FakeBroker()
+    broker.pending = {"XAUUSD": ["500"]}  # a pending order is waiting
+    monitor = PositionMonitor(broker, pending_expiry_minutes=120)
+    monitor.track_pending("500", "XAUUSD")
+
+    # Not stale yet.
+    await monitor.check_once()
+    assert broker.cancelled == []
+
+    # Fast-forward 3 hours by rewinding the recorded placement time.
+    monitor._pending["500"] = ("XAUUSD", time.time() - 3 * 3600)
+    await monitor.check_once()
+
+    assert broker.cancelled == ["500"]
+
+
+@pytest.mark.asyncio
+async def test_pending_order_that_fills_is_not_cancelled():
+    broker = FakeBroker()
+    broker.pending = {"XAUUSD": ["500"]}
+    monitor = PositionMonitor(broker, pending_expiry_minutes=120)
+    monitor.track_pending("500", "XAUUSD")
+    monitor._pending["500"] = ("XAUUSD", time.time() - 3 * 3600)  # old
+
+    # It filled (moved out of pending) before the expiry check ran.
+    broker.pending = {"XAUUSD": []}
+    await monitor.check_once()
+
+    assert broker.cancelled == []  # filled orders are never cancelled
+
+
+@pytest.mark.asyncio
+async def test_pending_order_is_not_journaled_as_closed_while_waiting():
+    broker = FakeBroker()
+    broker.pending = {"XAUUSD": ["500"]}  # still pending, not a position
+    journal = FakeJournal()
+    monitor = PositionMonitor(broker, journal=journal)
+    monitor.track_for_journal("500", "XAUUSD")  # journal tracks it
+
+    await monitor.check_once()
+
+    assert journal.closes == []  # a pending order is not a closed trade
 
 
 @pytest.mark.asyncio

@@ -516,6 +516,12 @@ class TradingEngine:
         # pending order isn't a position yet, so there's no ticket to move.
         if entry_price is None:
             self._register_breakeven(signal, placed_ids)
+        elif self.position_monitor is not None:
+            # Pending limit orders: track them so a stale one that never fills
+            # gets cancelled instead of filling late into a reversed market.
+            for oid in placed_ids:
+                if oid:
+                    self.position_monitor.track_pending(oid, self.settings.broker_symbol)
 
     def _register_breakeven(self, signal: TradeSignal, placed_ids: list[str]) -> None:
         if not self.settings.breakeven_after_tp1 or self.position_monitor is None:
