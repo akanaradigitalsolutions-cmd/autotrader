@@ -11,7 +11,10 @@ SYMBOL_ALIASES = {
     "GOLD": "XAUUSD",
 }
 
-DIRECTION_PATTERN = re.compile(r"\b(BUY|SELL|LONG|SHORT)\b", re.IGNORECASE)
+# The trailing letter may be repeated ("selll", "buyy") and no trailing word
+# boundary is required, so a fat-fingered direction word still parses. A
+# leading boundary is kept so it doesn't match mid-word.
+DIRECTION_PATTERN = re.compile(r"\b(BUY+|SELL+|LONG+|SHORT+)", re.IGNORECASE)
 SYMBOL_PATTERN = re.compile(
     r"\b(" + "|".join(re.escape(k) for k in SYMBOL_ALIASES) + r")\b", re.IGNORECASE
 )
@@ -121,8 +124,11 @@ class SignalParser:
         if symbol != self.allowed_symbol:
             return None
 
+        # startswith, not equality, so typo'd words ("BUYY", "SELLL") still
+        # map to the right side.
         direction_raw = direction_match.group(1).upper()
-        direction = Direction.BUY if direction_raw in ("BUY", "LONG") else Direction.SELL
+        is_buy = direction_raw.startswith("BUY") or direction_raw.startswith("LONG")
+        direction = Direction.BUY if is_buy else Direction.SELL
 
         entry_low, entry_high = self._parse_entry_zone(text, direction_match)
         entry = round((entry_low + entry_high) / 2, 2) if entry_low is not None else None

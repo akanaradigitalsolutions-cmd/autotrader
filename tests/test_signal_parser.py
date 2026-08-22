@@ -267,6 +267,18 @@ def test_thousands_separator_commas_are_stripped():
     assert signal.take_profits == [4113.0, 4105.0]
 
 
+def test_direction_word_with_repeated_trailing_letters_still_parses():
+    # Fat-fingered direction words ("selll", "buyy") must not lose a signal.
+    sell = make_parser().parse("gold selll 4400-4404\nsl 4410\ntp 4394\ntp 4380")
+    assert sell is not None
+    assert sell.direction == Direction.SELL
+    assert (sell.entry_low, sell.entry_high) == (4400.0, 4404.0)
+
+    buy = make_parser().parse("gold buyy 4300-4305\nsl 4290\ntp 4315\ntp 4325")
+    assert buy is not None
+    assert buy.direction == Direction.BUY
+
+
 def test_teaser_posts_without_any_price_level_are_not_signals():
     # Channels post hype messages before the real signal - these must not
     # be treated as tradable signals.
