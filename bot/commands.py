@@ -11,7 +11,9 @@ from bot.status import build_status_report
 
 logger = logging.getLogger(__name__)
 
-SET_PATTERN = re.compile(r"^/set\s+(lot|trades)\s+(\S+)\s*$", re.IGNORECASE)
+SET_PATTERN = re.compile(
+    r"^/set\s+(lot|trades|daily_loss)\s+(\S+)\s*$", re.IGNORECASE
+)
 CONFIRM_WORDS = {"yes", "y", "/confirm"}
 CANCEL_WORDS = {"no", "n", "/cancel"}
 
@@ -20,7 +22,8 @@ USAGE = (
     "/status\n"
     "/report\n"
     "/set lot <value>\n"
-    "/set trades <value>"
+    "/set trades <value>\n"
+    "/set daily_loss <percent>  (0 disables)"
 )
 
 
@@ -86,7 +89,10 @@ class CommandHandler:
         if lower.startswith("/set"):
             match = SET_PATTERN.match(stripped)
             if not match:
-                return "Usage: /set lot <value>  or  /set trades <value>"
+                return (
+                    "Usage: /set lot <value> | /set trades <value> | "
+                    "/set daily_loss <percent>"
+                )
             return self._propose_change(match.group(1).lower(), match.group(2))
 
         return USAGE
@@ -104,20 +110,37 @@ class CommandHandler:
             self._pending = PendingChange("lot_size", "LOT_SIZE", old_value, value)
             return f"Change LOT_SIZE from {old_value} to {value}?\nReply YES to confirm, NO to cancel."
 
-        if value <= 0 or not value.is_integer() or value > 10:
-            return "Trades/signal must be a whole number between 1 and 10."
-        new_value = int(value)
-        old_value = self.settings.trades_per_signal
-        self._pending = PendingChange("trades_per_signal", "TRADES_PER_SIGNAL", old_value, new_value)
+        if field == "trades":
+            if value <= 0 or not value.is_integer() or value > 10:
+                return "Trades/signal must be a whole number between 1 and 10."
+            new_value = int(value)
+            old_value = self.settings.trades_per_signal
+            self._pending = PendingChange(
+                "trades_per_signal", "TRADES_PER_SIGNAL", old_value, new_value
+            )
+            return (
+                f"Change TRADES_PER_SIGNAL from {old_value} to {new_value}?\n"
+                "Reply YES to confirm, NO to cancel."
+            )
+
+        # daily_loss (percent; 0 disables the circuit breaker)
+        if value < 0 or value > 100:
+            return "Daily loss limit must be a percent between 0 and 100 (0 disables)."
+        old_value = self.settings.daily_loss_limit_percent
+        self._pending = PendingChange(
+            "daily_loss_limit_percent", "DAILY_LOSS_LIMIT_PERCENT", old_value, value
+        )
         return (
-            f"Change TRADES_PER_SIGNAL from {old_value} to {new_value}?\n"
+            f"Change DAILY_LOSS_LIMIT_PERCENT from {old_value} to {value}?\n"
             "Reply YES to confirm, NO to cancel."
         )
 
     def _apply_pending(self) -> str:
         pending = self._pending
         self._pending = None
-        setattr(self.settings, pending.attr, pending.new_value)
+        # Route through the engine so dependent guards (e.g. the daily-loss
+        # circuit breaker) pick up the change immediately, not just settings.
+        self.engine.apply_setting(pending.attr, pending.new_value)
         self._persist_to_env(pending.env_key, pending.new_value)
         logger.warning(
             "Config changed via Telegram: %s %s -> %s",

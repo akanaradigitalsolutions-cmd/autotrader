@@ -78,6 +78,13 @@ class TradingEngine:
         self._cancelled: dict[tuple, datetime] = {}
         self._daily_loss = DailyLossGuard(broker, settings.daily_loss_limit_percent)
 
+    def apply_setting(self, attr: str, value) -> None:
+        """Apply a runtime setting change (from a Telegram command) so it
+        takes effect immediately, including refreshing dependent guards."""
+        setattr(self.settings, attr, value)
+        if attr == "daily_loss_limit_percent":
+            self._daily_loss.limit_percent = value
+
     async def handle_message(self, text: str, source: Optional[int] = None) -> None:
         if self.settings.honor_cancellations and CANCEL_PATTERN.search(text):
             await self._handle_cancellation(text)

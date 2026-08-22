@@ -84,6 +84,30 @@ async def test_set_lot_rejects_value_above_max(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_set_daily_loss_applies_and_refreshes_the_guard(tmp_path):
+    handler = make_handler(tmp_path, daily_loss_limit_percent=5.0)
+
+    proposal = await handler.handle("/set daily_loss 3")
+    assert "5.0 to 3" in proposal
+    assert handler.settings.daily_loss_limit_percent == 5.0  # not yet applied
+
+    confirmation = await handler.handle("yes")
+    assert handler.settings.daily_loss_limit_percent == 3.0
+    # the live guard must reflect the new limit, not just settings
+    assert handler.engine._daily_loss.limit_percent == 3.0
+    assert "DAILY_LOSS_LIMIT_PERCENT=3.0" in handler.env_path.read_text()
+
+
+@pytest.mark.asyncio
+async def test_set_daily_loss_rejects_out_of_range(tmp_path):
+    handler = make_handler(tmp_path)
+
+    reply = await handler.handle("/set daily_loss 150")
+
+    assert "between 0 and 100" in reply
+
+
+@pytest.mark.asyncio
 async def test_unrelated_message_does_not_consume_pending_confirmation_silently(tmp_path):
     handler = make_handler(tmp_path)
 

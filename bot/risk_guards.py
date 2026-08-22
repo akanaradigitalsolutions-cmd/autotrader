@@ -24,13 +24,14 @@ class DailyLossGuard:
         now: Optional[Callable[[], datetime]] = None,
     ):
         self._broker = broker
-        self._limit_percent = limit_percent
+        # public so it can be changed at runtime (e.g. via a Telegram command).
+        self.limit_percent = limit_percent
         self._now = now or (lambda: datetime.now(timezone.utc))
         self._day = None
         self._day_start_balance: Optional[float] = None
 
     async def should_block(self) -> bool:
-        if self._limit_percent <= 0:
+        if self.limit_percent <= 0:
             return False
         try:
             balance = await self._broker.get_account_balance()
@@ -49,4 +50,4 @@ class DailyLossGuard:
             return False
 
         drawdown_pct = (self._day_start_balance - balance) / self._day_start_balance * 100
-        return drawdown_pct >= self._limit_percent
+        return drawdown_pct >= self.limit_percent
