@@ -21,6 +21,7 @@ USAGE = (
     "Unknown command. Available:\n"
     "/status\n"
     "/report\n"
+    "/simreport\n"
     "/set lot <value>\n"
     "/set trades <value>\n"
     "/set daily_loss <percent>  (0 disables)"
@@ -52,6 +53,7 @@ class CommandHandler:
         start_time: float,
         env_path: str = ".env",
         journal=None,
+        sim_journal=None,
     ):
         self.settings = settings
         self.broker = broker
@@ -59,6 +61,7 @@ class CommandHandler:
         self.start_time = start_time
         self.env_path = Path(env_path)
         self.journal = journal
+        self.sim_journal = sim_journal
         self._pending: PendingChange | None = None
 
     async def handle(self, text: str) -> str:
@@ -85,6 +88,11 @@ class CommandHandler:
             if self.journal is None:
                 return "Trade journal is not enabled."
             return self.journal.summary()
+
+        if lower == "/simreport":
+            if self.sim_journal is None:
+                return "Simulation is not enabled."
+            return "SIMULATED (skipped signals, paper-traded):\n" + self.sim_journal.summary()
 
         if lower.startswith("/set"):
             match = SET_PATTERN.match(stripped)

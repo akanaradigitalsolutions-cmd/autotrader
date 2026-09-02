@@ -62,6 +62,7 @@ async def build_status_report(
         if settings.pending_order_expiry_minutes > 0
         else "pending_expiry=off"
     )
+    sim = "sim=on" if settings.simulate_skipped_signals else "sim=off"
     entry_mode = "entry=market" if settings.immediate_entry else "entry=zone"
     fallback_sl = (
         f"fallback_sl={settings.fallback_stop_loss_pips:.0f}p"
@@ -91,7 +92,7 @@ async def build_status_report(
         f"Max open positions: {settings.max_open_positions}\n"
         f"Guards: {guards}\n"
         f"Filter: {rr_filter} {trend} {pending_expiry}\n"
-        f"Entry: {entry_mode} {fallback_sl}\n"
+        f"Entry: {entry_mode} {fallback_sl} {sim}\n"
         f"Open positions now: {open_positions}\n"
         f"Uptime: {uptime}\n"
         f"Last signal: {last_signal}"

@@ -95,6 +95,14 @@ class Settings(BaseSettings):
     # Avoids stale unfilled limits; the trade-off is a worse fill when price
     # has already moved past the zone.
     immediate_entry: bool = False
+    # Paper-trade signals the bot SKIPPED (R:R filter, no-SL, trend filter):
+    # follow the market and record whether they'd have hit TP1 or the stop,
+    # so you can see if a filtered channel is secretly profitable. Risks
+    # nothing. /simreport summarizes it. Written to its own log file.
+    simulate_skipped_signals: bool = False
+    simulate_stop_loss_pips: float = 120.0  # sim stop for signals with no SL
+    simulate_timeout_hours: int = 24
+    simulated_trades_log_file: str = "logs/sim_trades.csv"
     # Honour channel cancellations ("don't trade it", "cancel", "no trade"):
     # skip a not-yet-opened signal and close any position already opened for
     # the cancelled signal (matched by its price levels).

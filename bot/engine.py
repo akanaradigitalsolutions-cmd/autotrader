@@ -60,6 +60,7 @@ class TradingEngine:
         position_monitor: Optional[PositionMonitor] = None,
         risk_notify: Optional[Callable[[str], Awaitable[None]]] = None,
         journal=None,
+        simulator=None,
     ):
         self.settings = settings
         self.parser = parser
@@ -68,6 +69,7 @@ class TradingEngine:
         self.risk_notify = risk_notify
         self.position_monitor = position_monitor
         self.journal = journal
+        self.simulator = simulator
         self.last_signal_summary: Optional[str] = None
         self.last_signal_at: Optional[datetime] = None
         self._recent_signals: dict[tuple, datetime] = {}
@@ -77,6 +79,22 @@ class TradingEngine:
         # (re-)traded if it arrives again within the window.
         self._cancelled: dict[tuple, datetime] = {}
         self._daily_loss = DailyLossGuard(broker, settings.daily_loss_limit_percent)
+
+    def _simulate(self, signal: TradeSignal, source, reason: str) -> None:
+        """Paper-trade a signal the bot chose not to execute."""
+        if not self.settings.simulate_skipped_signals or self.simulator is None:
+            return
+        stop = signal.stop_loss
+        if stop is None and signal.entry is not None:
+            dist = self.settings.simulate_stop_loss_pips * GOLD_PIP_SIZE
+            stop = round(
+                signal.entry + dist if signal.direction == Direction.SELL
+                else signal.entry - dist, 2,
+            )
+        self.simulator.add(
+            source, self.settings.broker_symbol, signal.direction,
+            signal.entry, stop, signal.primary_take_profit, reason,
+        )
 
     def _apply_fallback_stop_loss(self, signal: TradeSignal) -> TradeSignal:
         """Give a no-stop signal a synthetic stop so it can be traded safely.
@@ -162,6 +180,7 @@ class TradingEngine:
                     )
                 except Exception:
                     logger.exception("Failed to send no-stop-loss alert")
+            self._simulate(signal, source, "no stop loss")
             return
 
         inconsistency = self._consistency_error(signal)
@@ -198,6 +217,7 @@ class TradingEngine:
                     )
                 except Exception:
                     logger.exception("Failed to send R:R-filter alert")
+            self._simulate(signal, source, "below R:R filter")
             return
 
         if rr is not None and rr < self.settings.min_reward_risk:
@@ -229,6 +249,7 @@ class TradingEngine:
                         )
                     except Exception:
                         logger.exception("Failed to send trend-filter alert")
+                self._simulate(signal, source, "against trend")
                 return
             # shadow mode: log what it *would* skip, but still trade.
             logger.warning(

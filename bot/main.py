@@ -12,7 +12,8 @@ from bot.health import broker_watchdog
 from bot.logging_config import setup_logging
 from bot.notifier import Alerter
 from bot.position_monitor import PositionMonitor
-from bot.signal_parser import SignalParser
+from bot.signal_parser import GOLD_PIP_SIZE, SignalParser
+from bot.simulator import SignalSimulator
 from bot.telegram_listener import TelegramListener
 from bot.trade_journal import TradeJournal
 
@@ -102,16 +103,23 @@ async def run() -> None:
         trailing_distance_pips=settings.trailing_distance_pips,
         pending_expiry_minutes=settings.pending_order_expiry_minutes,
     )
+    sim_journal = TradeJournal(settings.simulated_trades_log_file)
+    simulator = SignalSimulator(
+        broker, sim_journal, GOLD_PIP_SIZE, settings.simulate_timeout_hours
+    )
     engine = TradingEngine(
         settings, parser, broker,
         notify=lambda text: alerter.alert("trade-failed", text),
         position_monitor=monitor,
         risk_notify=lambda text: alerter.alert("risk-warning", text),
         journal=journal,
+        simulator=simulator,
     )
 
     start_time = time.monotonic()
-    command_handler = CommandHandler(settings, broker, engine, start_time, journal=journal)
+    command_handler = CommandHandler(
+        settings, broker, engine, start_time, journal=journal, sim_journal=sim_journal
+    )
 
     # Re-track positions opened in a previous run whose close wasn't yet
     # journaled (restart loses in-memory tracking), so /report P&L is complete.
@@ -120,6 +128,12 @@ async def run() -> None:
 
     # Moves runner positions to breakeven after their TP1 hits.
     monitor_task = asyncio.create_task(monitor.run())
+    # Paper-trades skipped signals so /simreport can show if a filtered
+    # channel would have been profitable.
+    sim_task = (
+        asyncio.create_task(simulator.run())
+        if settings.simulate_skipped_signals else None
+    )
 
     # Watches the MetaApi side the same way the listener watches Telegram:
     # if broker calls keep failing, the process exits and systemd restarts
@@ -160,6 +174,8 @@ async def run() -> None:
     finally:
         health_task.cancel()
         monitor_task.cancel()
+        if sim_task is not None:
+            sim_task.cancel()
         try:
             await asyncio.wait_for(broker.disconnect(), timeout=10)
         except Exception:
