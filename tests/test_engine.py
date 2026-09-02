@@ -348,6 +348,48 @@ async def test_trend_filter_on_allows_with_trend_signal():
 
 
 @pytest.mark.asyncio
+async def test_no_sl_signal_refused_by_default():
+    broker = FakeBroker(bid=4450, ask=4450)
+    engine = TradingEngine(make_settings(), SignalParser(), broker)
+
+    # "SL: VIP" style - no numeric stop.
+    await engine.handle_message("#XAUUSD SELL 4450\ntp 4445\ntp 4440\ntp 4435")
+
+    assert broker.placed_orders == []
+
+
+@pytest.mark.asyncio
+async def test_fallback_stop_loss_lets_a_no_sl_signal_trade():
+    broker = FakeBroker(bid=4450, ask=4450)
+    engine = TradingEngine(
+        make_settings(fallback_stop_loss_pips=120, skip_reward_risk_below=0.0),
+        SignalParser(), broker,
+    )
+
+    await engine.handle_message("#XAUUSD SELL 4450\ntp 4445\ntp 4440\ntp 4435")
+
+    assert len(broker.placed_orders) >= 1
+    # synthetic stop is 120 pips = $12 ABOVE entry for a sell
+    placed_signal = broker.placed_orders[0][0]
+    assert placed_signal.stop_loss == 4462.0
+
+
+@pytest.mark.asyncio
+async def test_immediate_entry_market_fills_instead_of_pending():
+    # Price below a SELL zone would normally place a pending limit; with
+    # immediate_entry it markets in now instead.
+    broker = FakeBroker(bid=4300, ask=4300)
+    engine = TradingEngine(
+        make_settings(immediate_entry=True), SignalParser(), broker
+    )
+
+    await engine.handle_message(SELL_SIGNAL)  # price below zone
+
+    assert len(broker.placed_orders) == 3
+    assert all(entry_price is None for _, _, entry_price in broker.placed_orders)
+
+
+@pytest.mark.asyncio
 async def test_misparsed_signal_with_levels_on_wrong_side_is_refused():
     # A mangled SELL: entry ~420 but stop/TPs are ~4100 (real levels), so
     # the take-profits sit ABOVE the entry - impossible for a sell.

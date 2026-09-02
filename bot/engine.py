@@ -11,7 +11,7 @@ from bot.models import Direction, TradeSignal
 from bot.position_monitor import PositionMonitor
 from bot.risk import resolve_lot_size, reward_risk_ratio, take_profits_for_trades
 from bot.risk_guards import DailyLossGuard
-from bot.signal_parser import SignalParser
+from bot.signal_parser import GOLD_PIP_SIZE, SignalParser
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,30 @@ class TradingEngine:
         self._cancelled: dict[tuple, datetime] = {}
         self._daily_loss = DailyLossGuard(broker, settings.daily_loss_limit_percent)
 
+    def _apply_fallback_stop_loss(self, signal: TradeSignal) -> TradeSignal:
+        """Give a no-stop signal a synthetic stop so it can be traded safely.
+
+        Only when FALLBACK_STOP_LOSS_PIPS is set and the signal has an entry
+        but no stop. The stop goes on the correct side (above entry for a
+        SELL, below for a BUY). Off by default - no-SL signals stay refused.
+        """
+        if (
+            signal.stop_loss is not None
+            or self.settings.fallback_stop_loss_pips <= 0
+            or signal.entry is None
+        ):
+            return signal
+        distance = self.settings.fallback_stop_loss_pips * GOLD_PIP_SIZE
+        if signal.direction == Direction.SELL:
+            stop = round(signal.entry + distance, 2)
+        else:
+            stop = round(signal.entry - distance, 2)
+        logger.info(
+            "Signal had no stop loss - applied fallback stop %.2f (%.0f pips from %.2f)",
+            stop, self.settings.fallback_stop_loss_pips, signal.entry,
+        )
+        return signal.model_copy(update={"stop_loss": stop})
+
     def apply_setting(self, attr: str, value) -> None:
         """Apply a runtime setting change (from a Telegram command) so it
         takes effect immediately, including refreshing dependent guards."""
@@ -94,6 +118,8 @@ class TradingEngine:
         if signal is None:
             logger.debug("Message did not match a tradable signal, ignoring")
             return
+
+        signal = self._apply_fallback_stop_loss(signal)
 
         rr = reward_risk_ratio(signal)
         rr_text = f"{rr:.2f}" if rr is not None else "n/a"
@@ -610,6 +636,8 @@ class TradingEngine:
         Otherwise returns the near edge of the zone as a pending limit price,
         so the trade only opens once price actually reaches it.
         """
+        if self.settings.immediate_entry:
+            return None  # always take the market now, never a pending limit
         if signal.entry_low is None or signal.entry_high is None:
             return None
 

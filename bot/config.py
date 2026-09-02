@@ -86,6 +86,15 @@ class Settings(BaseSettings):
     # minutes, so a stale signal can't fill hours later into a reversed
     # market. 0 disables (pending orders stay good-till-cancelled).
     pending_order_expiry_minutes: int = 0
+    # When a signal has NO stop loss (some channels manage it "live"), apply
+    # a synthetic stop this many pips from entry so the trade is protected.
+    # 0 = keep refusing no-SL signals (safest). 1 gold pip = $0.10.
+    fallback_stop_loss_pips: float = 0.0
+    # Enter at market as soon as a signal fires, even if price is outside the
+    # entry zone, instead of placing a pending limit order and waiting.
+    # Avoids stale unfilled limits; the trade-off is a worse fill when price
+    # has already moved past the zone.
+    immediate_entry: bool = False
     # Honour channel cancellations ("don't trade it", "cancel", "no trade"):
     # skip a not-yet-opened signal and close any position already opened for
     # the cancelled signal (matched by its price levels).
