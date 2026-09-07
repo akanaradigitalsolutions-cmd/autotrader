@@ -31,8 +31,6 @@ RECONNECT_TIMEOUT_SECONDS = 60
 # blocks the same signal from being (re-)traded.
 CANCEL_WINDOW = timedelta(hours=6)
 
-# Phrases a channel uses to call off a signal. Kept specific to avoid
-# mistaking normal signal wording for a cancellation.
 def _ema(values: list[float], period: int) -> float:
     k = 2.0 / (period + 1)
     ema = values[0]
@@ -41,6 +39,8 @@ def _ema(values: list[float], period: int) -> float:
     return ema
 
 
+# Phrases a channel uses to call off a signal. Kept specific to avoid
+# mistaking normal signal wording for a cancellation.
 CANCEL_PATTERN = re.compile(
     r"do\s*n[’'`]?t\s*trade|do\s+not\s+trade|no\s+trade|\bcancel"
     r"|skip\s+(this|it)|ignore\s+(this|it)|invalid\s+signal|do\s*n[’'`]?t\s+take",

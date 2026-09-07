@@ -52,6 +52,20 @@ def test_open_without_close_is_listed_for_backfill(tmp_path):
     assert pending == {"2": "XAUUSDm"}
 
 
+def test_blank_reward_risk_does_not_poison_the_average(tmp_path):
+    j = make_journal(tmp_path)
+    j.record_open("1", -100, Direction.SELL, "XAUUSD", 4120, 4128, 4099, 2.0, 0.01)
+    j.record_open("2", -100, Direction.SELL, "XAUUSD", 4120, 4128, 4099, None, 0.01)  # blank rr
+    j.record_close("1", 5.0)
+    j.record_close("2", 5.0)
+
+    summary = j.summary()
+
+    # avg R:R must be the one valid value (2.00), not NaN
+    assert "avg R:R 2.00" in summary
+    assert "nan" not in summary.lower()
+
+
 def test_writing_never_raises_on_bad_path(tmp_path):
     # A directory where a file is expected - _append must swallow the error.
     bad = tmp_path / "dir"

@@ -111,11 +111,17 @@ class TradeJournal:
                     s["wins"] += 1
                 elif profit < 0:
                     s["losses"] += 1
+            # Average only the rows that actually have a numeric R:R; a blank
+            # (or NaN) must be skipped, not folded in - otherwise one blank
+            # poisons the whole channel's average into NaN.
+            raw_rr = open_row.get("rr", "")
             try:
-                s["rr_sum"] += float(open_row.get("rr", "") or "nan")
+                rr_val = float(raw_rr)
+            except (TypeError, ValueError):
+                rr_val = None
+            if rr_val is not None and rr_val == rr_val:  # rr_val == rr_val is False for NaN
+                s["rr_sum"] += rr_val
                 s["rr_n"] += 1
-            except ValueError:
-                pass
 
         for pid, open_row in opens.items():
             close_row = closes.get(pid)
