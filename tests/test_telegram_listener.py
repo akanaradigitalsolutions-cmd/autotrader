@@ -11,20 +11,30 @@ import pytest
 # below replaces the client with a fake anyway.
 try:
     import telethon  # noqa: F401
+    from telethon.errors import FloodWaitError
 except ImportError:
     telethon_stub = types.ModuleType("telethon")
     events_stub = types.ModuleType("telethon.events")
+    errors_stub = types.ModuleType("telethon.errors")
 
     class _NewMessage:
         def __init__(self, chats=None, pattern=None):
             self.chats = chats
             self.pattern = pattern
 
+    class FloodWaitError(Exception):
+        def __init__(self, seconds=0):
+            self.seconds = seconds
+            super().__init__(f"A wait of {seconds} seconds is required")
+
     events_stub.NewMessage = _NewMessage
+    errors_stub.FloodWaitError = FloodWaitError
     telethon_stub.events = events_stub
+    telethon_stub.errors = errors_stub
     telethon_stub.TelegramClient = object
     sys.modules["telethon"] = telethon_stub
     sys.modules["telethon.events"] = events_stub
+    sys.modules["telethon.errors"] = errors_stub
 
 import bot.telegram_listener as tl
 
@@ -165,6 +175,40 @@ async def test_watchdog_restarts_when_catch_up_keeps_failing(monkeypatch):
 
     assert listener._client.catch_up_calls == tl.WATCHDOG_MAX_FAILURES
     assert listener._client.disconnect_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_watchdog_waits_out_floodwait_without_restarting(monkeypatch):
+    # A FloodWait is rate-limiting, not a dead link: it must never count as a
+    # failed check or trigger a restart (restarting re-queries and floods
+    # harder - the loop this guards against).
+    monkeypatch.setattr(tl, "WATCHDOG_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(tl, "FLOOD_WAIT_MARGIN_SECONDS", 0)
+    listener = make_listener(monkeypatch)
+    client = listener._client
+    probes = {"count": 0}
+    # Far more floods in a row than WATCHDOG_MAX_FAILURES - none may restart.
+    flood_probes = tl.WATCHDOG_MAX_FAILURES + 5
+
+    async def flooding_get_me():
+        probes["count"] += 1
+        if probes["count"] >= flood_probes:
+            await asyncio.get_running_loop().create_future()  # park forever
+        raise tl.FloodWaitError(seconds=0)
+
+    client.get_me = flooding_get_me
+
+    task = asyncio.create_task(listener._watchdog())
+    for _ in range(1000):
+        if probes["count"] >= flood_probes:
+            break
+        await asyncio.sleep(0)
+    assert probes["count"] >= flood_probes
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert client.disconnect_calls == 0  # never treated as a dead connection
 
 
 @pytest.mark.asyncio

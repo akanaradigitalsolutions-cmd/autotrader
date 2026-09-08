@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Awaitable, Callable, Optional
 
 from telethon import TelegramClient, events
+from telethon.errors import FloodWaitError
 
 from bot.aio import externally_cancelled
 
@@ -31,6 +32,13 @@ HEARTBEAT_EVERY_CHECKS = 30
 # it, so run it every few checks as both a recovery and a health probe.
 CATCHUP_EVERY_CHECKS = 5
 CATCHUP_TIMEOUT_SECONDS = 60
+# A FloodWaitError is Telegram rate-limiting us, NOT a dead connection: the
+# link is fine, we simply asked too often. Restarting on it is actively
+# harmful - the fresh process re-queries and floods harder, a loop. Wait the
+# requested time out (plus a small margin) instead, capped so a pathological
+# multi-hour wait still eventually re-probes rather than sleeping forever.
+FLOOD_WAIT_MARGIN_SECONDS = 5
+FLOOD_WAIT_MAX_SLEEP_SECONDS = 900
 
 # Signals delivered late (reconnect backlog, stalled connection) are
 # dangerous to trade: the market has moved since the price levels were
@@ -180,6 +188,9 @@ class TelegramListener:
                     await self._shutdown_dead_connection()
                     return
                 continue
+            except FloodWaitError as exc:
+                await self._wait_out_flood(exc, "health check")
+                continue
             except Exception as exc:
                 failures += 1
                 logger.warning(
@@ -209,6 +220,8 @@ class TelegramListener:
                     if catchup_failures >= WATCHDOG_MAX_FAILURES:
                         await self._shutdown_dead_connection()
                         return
+                except FloodWaitError as exc:
+                    await self._wait_out_flood(exc, "catch-up")
                 except Exception as exc:
                     catchup_failures += 1
                     logger.warning(
@@ -221,6 +234,17 @@ class TelegramListener:
 
             if checks % HEARTBEAT_EVERY_CHECKS == 0:
                 logger.info("Heartbeat: Telegram connection healthy")
+
+    async def _wait_out_flood(self, exc: FloodWaitError, probe: str) -> None:
+        # Rate-limit, not a dead link: sleep it out and re-probe. Deliberately
+        # does not touch the failure counter - the connection is healthy.
+        wait = getattr(exc, "seconds", 0) or 0
+        sleep_for = min(wait + FLOOD_WAIT_MARGIN_SECONDS, FLOOD_WAIT_MAX_SLEEP_SECONDS)
+        logger.warning(
+            "Telegram %s rate-limited (FloodWait %ss) - waiting %ss, not restarting",
+            probe, wait, sleep_for,
+        )
+        await asyncio.sleep(sleep_for)
 
     async def _shutdown_dead_connection(self) -> None:
         logger.error(
