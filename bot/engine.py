@@ -265,9 +265,10 @@ class TradingEngine:
                     timeout=BROKER_CALL_TIMEOUT_SECONDS,
                 )
                 if state.get("order_failed"):
-                    await self._report_failed_signal()
+                    await self._report_failed_signal(state.get("last_error"))
                 return
             except asyncio.TimeoutError:
+                state["last_error"] = f"timed out after {BROKER_CALL_TIMEOUT_SECONDS}s"
                 logger.error(
                     "Attempt %d/%d timed out after %ds waiting on broker (check "
                     "BROKER_SYMBOL=%s is a valid symbol on your MT5 account)",
@@ -277,15 +278,15 @@ class TradingEngine:
             except asyncio.CancelledError:
                 if externally_cancelled():
                     raise
-                # The MetaApi SDK cancelled its own in-flight call (its socket
-                # reconnected mid-request). Seen in production as a signal
-                # that parsed and then vanished with no trade and no error.
+                # The broker client cancelled its own in-flight call (socket
+                # reconnected mid-request).
+                state["last_error"] = "broker call cancelled (connection reset mid-call)"
                 logger.error(
-                    "Attempt %d/%d: broker call was cancelled by the MetaApi "
-                    "client (connection reset mid-call)",
+                    "Attempt %d/%d: broker call was cancelled (connection reset mid-call)",
                     attempt, EXECUTE_ATTEMPTS,
                 )
-            except Exception:  # noqa: BLE001 - surface any unexpected error instead of dropping it silently
+            except Exception as exc:  # noqa: BLE001 - surface any unexpected error instead of dropping it silently
+                state["last_error"] = repr(exc)
                 logger.exception(
                     "Attempt %d/%d: unexpected error executing signal",
                     attempt, EXECUTE_ATTEMPTS,
@@ -303,7 +304,7 @@ class TradingEngine:
                 await self._rebuild_broker_connection()
                 await asyncio.sleep(RETRY_DELAY_SECONDS)
 
-        await self._report_failed_signal()
+        await self._report_failed_signal(state.get("last_error"))
 
     @staticmethod
     def _fingerprint(signal: TradeSignal) -> tuple:
@@ -448,17 +449,20 @@ class TradingEngine:
         except Exception:
             logger.exception("Broker reconnect failed - retrying on the old connection")
 
-    async def _report_failed_signal(self) -> None:
-        logger.error("Signal was NOT fully executed: %s", self.last_signal_summary)
+    async def _report_failed_signal(self, reason: Optional[str] = None) -> None:
+        logger.error(
+            "Signal was NOT executed: %s (reason: %s)", self.last_signal_summary, reason
+        )
         if self.notify is None:
             return
+        detail = f"\nBroker said: {reason}" if reason else ""
         try:
             await self.notify(
                 f"🚨 Autotrader could NOT execute this signal:\n"
-                f"{self.last_signal_summary}\n"
-                "The broker connection kept failing. Check the MT5 account and "
-                "https://app.metaapi.cloud - and check MT5 in case a duplicate "
-                "or partial order went through."
+                f"{self.last_signal_summary}{detail}\n"
+                "Check: MT5 terminal running with AutoTrading enabled, the symbol "
+                "name matches the account, stops aren't too close, and there's "
+                "enough margin. Also check MT5 for a duplicate/partial order."
             )
         except Exception:
             logger.exception("Failed to send trade-failure alert")
@@ -560,6 +564,7 @@ class TradingEngine:
             else:
                 logger.error("Trade %d/%d failed: %s", i, len(trades_to_place), result.message)
                 state["order_failed"] = True
+                state["last_error"] = result.message
 
         # Remember which positions this signal opened, so a later "don't
         # trade it" from the channel can close exactly these.
