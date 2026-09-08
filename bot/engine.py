@@ -43,7 +43,15 @@ def _ema(values: list[float], period: int) -> float:
 # mistaking normal signal wording for a cancellation.
 CANCEL_PATTERN = re.compile(
     r"do\s*n[’'`]?t\s*trade|do\s+not\s+trade|no\s+trade|\bcancel"
-    r"|skip\s+(this|it)|ignore\s+(this|it)|invalid\s+signal|do\s*n[’'`]?t\s+take",
+    r"|skip\s+(this|it)|ignore\s+(this|it)|invalid\s+signal|do\s*n[’'`]?t\s+take"
+    # "close at entry" and friends: the channel wants the trade flattened -
+    # cancel it if it hasn't filled, close it if it has. Anchored to the verb
+    # "close"/"exit" + an object so ordinary prose ("market will close soon")
+    # or a breakeven instruction ("move SL to entry") never matches.
+    r"|closed?\s+(at|on)\s+entry"
+    r"|closed?\s+(at|on)\s+(be\b|break\s*even)"
+    r"|close\s+(the\s+|this\s+)?(trade|position|order|deal|all|everything)"
+    r"|exit\s+(the\s+)?(trade|position|now|at\s+entry)",
     re.IGNORECASE,
 )
 
@@ -73,8 +81,10 @@ class TradingEngine:
         self.last_signal_summary: Optional[str] = None
         self.last_signal_at: Optional[datetime] = None
         self._recent_signals: dict[tuple, datetime] = {}
-        # signal fingerprint -> (opened_at, [position ids]) for cancellation.
-        self._opened: dict[tuple, tuple[datetime, list[str]]] = {}
+        # signal fingerprint -> (opened_at, [position ids], source) for
+        # cancellation. `source` lets a contextless "close at entry" close the
+        # right channel's most-recent trade.
+        self._opened: dict[tuple, tuple[datetime, list[str], Optional[int]]] = {}
         # signal fingerprint -> cancelled_at, so a cancelled signal isn't
         # (re-)traded if it arrives again within the window.
         self._cancelled: dict[tuple, datetime] = {}
@@ -129,7 +139,7 @@ class TradingEngine:
 
     async def handle_message(self, text: str, source: Optional[int] = None) -> None:
         if self.settings.honor_cancellations and CANCEL_PATTERN.search(text):
-            await self._handle_cancellation(text)
+            await self._handle_cancellation(text, source)
             return
 
         signal = self.parser.parse(text)
@@ -320,49 +330,127 @@ class TradingEngine:
             and datetime.now(timezone.utc) - cancelled_at < CANCEL_WINDOW
         )
 
-    async def _handle_cancellation(self, text: str) -> None:
+    async def _handle_cancellation(self, text: str, source: Optional[int] = None) -> None:
         signal = self.parser.parse(text)
         now = datetime.now(timezone.utc)
         closed: list[str] = []
+        matched = False
 
         if signal is not None:
+            # The cancellation quotes the signal's levels - match it exactly.
             fp = self._fingerprint(signal)
             self._cancelled[fp] = now  # block (re-)trading this signal too
             record = self._opened.pop(fp, None)
             if record is not None:
-                _, position_ids = record
-                for pid in position_ids:
-                    if await self._close_position(pid):
-                        closed.append(pid)
+                matched = True
+                closed = await self._flatten(record[1])
             logger.warning(
-                "Cancellation received (%s %s) - closed %d open position(s)",
+                "Cancellation received (%s %s) - closed/cancelled %d position(s)",
                 signal.direction, signal.symbol, len(closed),
             )
         else:
-            logger.warning(
-                "Cancellation message with no matchable signal levels: %.60s", text
-            )
+            # A contextless "close at entry" carries no levels. It refers to
+            # the trade the channel just gave, so fall back to the most recent
+            # signal still open - preferring the same channel - and flatten it.
+            fp = self._most_recent_opened_fingerprint(source, now)
+            if fp is not None:
+                matched = True
+                self._cancelled[fp] = now
+                record = self._opened.pop(fp)
+                closed = await self._flatten(record[1])
+                logger.warning(
+                    "Contextless close (%.30s) - closed/cancelled %d position(s) "
+                    "from the most recent signal", text.strip(), len(closed),
+                )
+            else:
+                logger.warning(
+                    "Close/cancel message with no matchable signal and nothing "
+                    "recently opened to act on: %.60s", text,
+                )
 
         if self.notify is not None:
             if closed:
                 msg = (
-                    f"🛑 Channel said DON'T TRADE - closed {len(closed)} open "
-                    "position(s) for that signal."
+                    f"🛑 Channel said CLOSE / DON'T TRADE - closed or cancelled "
+                    f"{len(closed)} position(s) for that signal."
                 )
             elif signal is not None:
                 msg = (
-                    "🛑 Channel said DON'T TRADE - no matching open position "
+                    "🛑 Channel said CLOSE / DON'T TRADE - no matching open position "
                     "(already closed, or it was never opened). It won't be traded."
+                )
+            elif matched:
+                msg = (
+                    "🛑 Channel said close the last trade - the most recent signal "
+                    "had nothing left to close (already gone)."
                 )
             else:
                 msg = (
-                    "🛑 Channel sent a cancellation I couldn't match to a signal - "
+                    "🛑 Channel sent a close/cancel I couldn't match to a signal - "
                     "please check MT5 manually."
                 )
             try:
                 await self.notify(msg)
             except Exception:
                 logger.exception("Failed to send cancellation alert")
+
+    def _most_recent_opened_fingerprint(
+        self, source: Optional[int], now: datetime
+    ) -> Optional[tuple]:
+        recent = [
+            (ts, fp, src)
+            for fp, (ts, _ids, src) in self._opened.items()
+            if now - ts < CANCEL_WINDOW
+        ]
+        if not recent:
+            return None
+        # Prefer a trade from the same channel; only if none, use any recent.
+        if source is not None:
+            same_source = [(ts, fp) for ts, fp, src in recent if src == source]
+            if same_source:
+                return max(same_source)[1]
+        return max((ts, fp) for ts, fp, _src in recent)[1]
+
+    async def _flatten(self, position_ids: list[str]) -> list[str]:
+        """Close filled positions and cancel still-pending orders for a signal.
+
+        A tracked id may be a filled position OR a pending limit order that
+        never reached its entry ("close at entry" often arrives before the
+        zone is touched). Pending ones are cancelled; filled ones are closed.
+        """
+        pending: set[str] = set()
+        try:
+            pending = set(
+                await asyncio.wait_for(
+                    self.broker.get_pending_orders(self.settings.broker_symbol),
+                    timeout=BROKER_CALL_TIMEOUT_SECONDS,
+                )
+            )
+        except Exception:
+            logger.exception("Could not list pending orders while cancelling")
+        done: list[str] = []
+        for pid in position_ids:
+            if pid in pending:
+                ok = await self._cancel_order(pid)
+            else:
+                ok = await self._close_position(pid)
+            if ok:
+                done.append(pid)
+        return done
+
+    async def _cancel_order(self, order_id: str) -> bool:
+        try:
+            return await asyncio.wait_for(
+                self.broker.cancel_order(order_id), timeout=BROKER_CALL_TIMEOUT_SECONDS
+            )
+        except asyncio.CancelledError:
+            if externally_cancelled():
+                raise
+            logger.warning("Cancel of pending order %s cancelled by a reconnect", order_id)
+            return False
+        except Exception:
+            logger.exception("Failed to cancel pending order %s", order_id)
+            return False
 
     async def _close_position(self, position_id: str) -> bool:
         try:
@@ -394,12 +482,14 @@ class TradingEngine:
             for pid in ids:
                 self.position_monitor.track_for_journal(pid, self.settings.broker_symbol)
 
-    def _record_opened(self, signal: TradeSignal, placed_ids: list[str]) -> None:
+    def _record_opened(
+        self, signal: TradeSignal, placed_ids: list[str], source: Optional[int] = None
+    ) -> None:
         ids = [i for i in placed_ids if i]
         if not ids:
             return
         now = datetime.now(timezone.utc)
-        self._opened[self._fingerprint(signal)] = (now, ids)
+        self._opened[self._fingerprint(signal)] = (now, ids, source)
         self._opened = {
             fp: rec for fp, rec in self._opened.items() if now - rec[0] < CANCEL_WINDOW
         }
@@ -568,7 +658,7 @@ class TradingEngine:
 
         # Remember which positions this signal opened, so a later "don't
         # trade it" from the channel can close exactly these.
-        self._record_opened(signal, placed_ids)
+        self._record_opened(signal, placed_ids, source)
         self._journal_opened(signal, placed_ids, source, rr, volume)
 
         # Only market fills (entry_price is None) are breakeven-managed; a

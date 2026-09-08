@@ -309,6 +309,70 @@ async def test_cancellation_of_a_different_signal_does_not_close_positions():
     assert broker.closed == []  # the open position is left alone
 
 
+@pytest.mark.asyncio
+async def test_close_at_entry_with_no_levels_closes_the_last_signal():
+    broker = FakeBroker(bid=4057, ask=4057)  # in the 4055-59 sell zone -> filled
+    engine = TradingEngine(make_settings(), SignalParser(), broker)
+
+    await engine.handle_message("gold sell 4055-59\nsl 4067\ntp 4050\ntp 4034\ntp 3955")
+    assert len(broker.placed_orders) >= 1
+
+    # A follow-up message with NO price levels, just the instruction.
+    await engine.handle_message("close at entry")
+
+    assert len(broker.closed) == len(broker.placed_orders)  # the last trade flattened
+
+
+@pytest.mark.asyncio
+async def test_close_at_entry_prefers_the_same_channels_last_signal():
+    broker = FakeBroker(bid=4057, ask=4057)
+    engine = TradingEngine(make_settings(), SignalParser(), broker)
+
+    # Channel A opens a trade, then channel B opens a different one.
+    await engine.handle_message(
+        "gold sell 4055-59\nsl 4067\ntp 4050\ntp 4034\ntp 3955", source=-100
+    )
+    a_orders = len(broker.placed_orders)
+    await engine.handle_message(
+        "gold sell 4056-60\nsl 4068\ntp 4051\ntp 4035\ntp 3956", source=-200
+    )
+
+    # Channel A says "close at entry" - only A's positions must close.
+    await engine.handle_message("close at entry", source=-100)
+
+    assert len(broker.closed) == a_orders
+    assert broker.closed == [str(i) for i in range(1, a_orders + 1)]
+
+
+@pytest.mark.asyncio
+async def test_close_at_entry_cancels_a_still_pending_order():
+    # Price below the zone -> pending limit orders, nothing filled yet.
+    broker = FakeBroker(bid=4300, ask=4300.2)
+    broker.pending = []
+
+    async def get_pending_orders(symbol):
+        return list(broker.pending)
+
+    async def cancel_order(order_id):
+        broker.cancelled.append(order_id)
+        return True
+
+    broker.cancelled = []
+    broker.get_pending_orders = get_pending_orders
+    broker.cancel_order = cancel_order
+
+    engine = TradingEngine(make_settings(), SignalParser(), broker)
+    await engine.handle_message("gold sell 4314-18\nsl 4325.9\ntp 4309\ntp 4301\ntp 4200")
+    # Every placed order is still pending (unfilled).
+    broker.pending = [str(i) for i in range(1, len(broker.placed_orders) + 1)]
+
+    await engine.handle_message("close at entry")
+
+    # Pending orders were CANCELLED, not market-closed.
+    assert broker.cancelled == broker.pending
+    assert broker.closed == []
+
+
 UPTREND_CLOSES = [float(x) for x in range(4000, 4100)]  # rising -> price > EMA
 
 
