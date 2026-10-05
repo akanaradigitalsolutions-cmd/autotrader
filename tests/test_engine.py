@@ -310,6 +310,55 @@ async def test_cancellation_of_a_different_signal_does_not_close_positions():
 
 
 @pytest.mark.asyncio
+async def test_paused_engine_skips_new_trades(tmp_path):
+    broker = FakeBroker(bid=4316, ask=4316.2)  # in-zone -> would normally fill
+    engine = TradingEngine(
+        make_settings(pause_state_file=str(tmp_path / "pause.json")),
+        SignalParser(), broker,
+    )
+    engine.pause.pause(None)
+
+    await engine.handle_message(SELL_SIGNAL)
+
+    assert broker.placed_orders == []  # nothing opened while paused
+
+
+@pytest.mark.asyncio
+async def test_paused_engine_still_closes_on_cancellation(tmp_path):
+    broker = FakeBroker(bid=4057, ask=4057)
+    engine = TradingEngine(
+        make_settings(pause_state_file=str(tmp_path / "pause.json")),
+        SignalParser(), broker,
+    )
+    # Open a trade BEFORE pausing, then pause, then the channel cancels it.
+    await engine.handle_message("gold sell 4055-59\nsl 4067\ntp 4050\ntp 4034\ntp 3955")
+    assert len(broker.placed_orders) >= 1
+    engine.pause.pause(None)
+
+    await engine.handle_message(
+        "gold sell 4055-59 sl 4067 tp 4050 tp 4034 tp 3955\ndon't trade it"
+    )
+
+    # Cancellations must still work while paused - you can always get flat.
+    assert len(broker.closed) == len(broker.placed_orders)
+
+
+@pytest.mark.asyncio
+async def test_resumed_engine_trades_again(tmp_path):
+    broker = FakeBroker(bid=4316, ask=4316.2)
+    engine = TradingEngine(
+        make_settings(pause_state_file=str(tmp_path / "pause.json")),
+        SignalParser(), broker,
+    )
+    engine.pause.pause(None)
+    engine.pause.resume()
+
+    await engine.handle_message(SELL_SIGNAL)
+
+    assert len(broker.placed_orders) >= 1
+
+
+@pytest.mark.asyncio
 async def test_close_at_entry_with_no_levels_closes_the_last_signal():
     broker = FakeBroker(bid=4057, ask=4057)  # in the 4055-59 sell zone -> filled
     engine = TradingEngine(make_settings(), SignalParser(), broker)

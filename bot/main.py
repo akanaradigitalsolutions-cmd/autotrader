@@ -16,6 +16,7 @@ from bot.signal_parser import GOLD_PIP_SIZE, SignalParser
 from bot.simulator import SignalSimulator
 from bot.telegram_listener import TelegramListener
 from bot.trade_journal import TradeJournal
+from bot.trade_pause import TradePause
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +108,10 @@ async def run() -> None:
     simulator = SignalSimulator(
         broker, sim_journal, GOLD_PIP_SIZE, settings.simulate_timeout_hours
     )
+    # File-backed so a pause (e.g. for NFP) survives a bot restart.
+    pause = TradePause(settings.pause_state_file)
+    if pause.is_paused():
+        logger.warning("Starting with trading PAUSED (%s)", pause.status_text())
     engine = TradingEngine(
         settings, parser, broker,
         notify=lambda text: alerter.alert("trade-failed", text),
@@ -114,6 +119,7 @@ async def run() -> None:
         risk_notify=lambda text: alerter.alert("risk-warning", text),
         journal=journal,
         simulator=simulator,
+        pause=pause,
     )
 
     start_time = time.monotonic()
@@ -159,10 +165,10 @@ async def run() -> None:
 
     health_task.add_done_callback(_die_if_health_watchdog_crashed)
 
-    await alerter.alert(
-        "online",
-        f"✅ Autotrader online - {mode}. Listening on {settings.telegram_channel}.",
-    )
+    online_msg = f"✅ Autotrader online - {mode}. Listening on {settings.telegram_channel}."
+    if pause.is_paused():
+        online_msg += f"\n⏸️ NOTE: {pause.status_text()}. Send /resume to trade."
+    await alerter.alert("online", online_msg)
 
     try:
         await listener.start(engine.handle_message, command_handler.handle)

@@ -1,8 +1,9 @@
 import logging
 import re
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
-from typing import Union
+from typing import Optional, Union
 
 from bot.broker.base import ExecutionClient
 from bot.config import Settings
@@ -14,6 +15,9 @@ logger = logging.getLogger(__name__)
 SET_PATTERN = re.compile(
     r"^/set\s+(lot|trades|daily_loss)\s+(\S+)\s*$", re.IGNORECASE
 )
+PAUSE_PATTERN = re.compile(r"^/pause(?:\s+(.+))?$", re.IGNORECASE)
+# Duration tokens like "1d", "4h", "30m" (any mix, e.g. "1d6h").
+DURATION_TOKEN = re.compile(r"(\d+)\s*([dhm])", re.IGNORECASE)
 CONFIRM_WORDS = {"yes", "y", "/confirm"}
 CANCEL_WORDS = {"no", "n", "/cancel"}
 
@@ -22,10 +26,39 @@ USAGE = (
     "/status\n"
     "/report\n"
     "/simreport\n"
+    "/pause [duration]  (e.g. /pause 1d, /pause 4h; no arg = until /resume)\n"
+    "/resume\n"
     "/set lot <value>\n"
     "/set trades <value>\n"
     "/set daily_loss <percent>  (0 disables)"
 )
+
+
+def parse_duration(arg: str) -> Optional[timedelta]:
+    """Parse '1d' / '4h' / '30m' / '1d6h' (or a bare number = hours).
+
+    Returns None if the string can't be read as a duration.
+    """
+    arg = arg.strip().lower()
+    tokens = DURATION_TOKEN.findall(arg)
+    if tokens:
+        # Reject stray characters so "1dxyz" isn't silently accepted as 1d.
+        if DURATION_TOKEN.sub("", arg).strip():
+            return None
+        total = timedelta()
+        for num, unit in tokens:
+            n = int(num)
+            total += (
+                timedelta(days=n) if unit == "d"
+                else timedelta(hours=n) if unit == "h"
+                else timedelta(minutes=n)
+            )
+        return total if total > timedelta() else None
+    try:
+        hours = float(arg)
+    except ValueError:
+        return None
+    return timedelta(hours=hours) if hours > 0 else None
 
 
 @dataclass
@@ -94,6 +127,13 @@ class CommandHandler:
                 return "Simulation is not enabled."
             return "SIMULATED (skipped signals, paper-traded):\n" + self.sim_journal.summary()
 
+        if lower == "/resume":
+            self.engine.pause.resume()
+            return "▶️ Trading RESUMED - new signals will be traded again."
+
+        if lower.startswith("/pause"):
+            return self._handle_pause(stripped)
+
         if lower.startswith("/set"):
             match = SET_PATTERN.match(stripped)
             if not match:
@@ -104,6 +144,29 @@ class CommandHandler:
             return self._propose_change(match.group(1).lower(), match.group(2))
 
         return USAGE
+
+    def _handle_pause(self, stripped: str) -> str:
+        match = PAUSE_PATTERN.match(stripped)
+        arg = (match.group(1) or "").strip() if match else ""
+        if not arg:
+            self.engine.pause.pause(None)
+            return (
+                "⏸️ Trading PAUSED until you send /resume.\n"
+                "Open trades keep running and cancellations still work - only "
+                "NEW signals are skipped."
+            )
+        duration = parse_duration(arg)
+        if duration is None:
+            return (
+                "Couldn't read that duration. Try: /pause 1d, /pause 4h, "
+                "/pause 30m, /pause 1d6h, or /pause with no time for indefinite."
+            )
+        self.engine.pause.pause(duration)
+        return (
+            f"⏸️ {self.engine.pause.status_text()}.\n"
+            "Open trades keep running; new signals are skipped. "
+            "Send /resume to restart early."
+        )
 
     def _propose_change(self, field: str, raw_value: str) -> str:
         try:

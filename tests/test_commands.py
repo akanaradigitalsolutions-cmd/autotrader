@@ -33,6 +33,7 @@ def make_settings(**overrides) -> Settings:
 
 
 def make_handler(tmp_path, **settings_overrides) -> CommandHandler:
+    settings_overrides.setdefault("pause_state_file", str(tmp_path / "pause.json"))
     settings = make_settings(**settings_overrides)
     engine = TradingEngine(settings, SignalParser(), FakeBroker())
     env_path = tmp_path / ".env"
@@ -105,6 +106,48 @@ async def test_set_daily_loss_rejects_out_of_range(tmp_path):
     reply = await handler.handle("/set daily_loss 150")
 
     assert "between 0 and 100" in reply
+
+
+@pytest.mark.asyncio
+async def test_pause_and_resume(tmp_path):
+    handler = make_handler(tmp_path)
+
+    reply = await handler.handle("/pause")
+    assert "PAUSED" in reply
+    assert handler.engine.pause.is_paused() is True
+
+    reply = await handler.handle("/resume")
+    assert "RESUMED" in reply
+    assert handler.engine.pause.is_paused() is False
+
+
+@pytest.mark.asyncio
+async def test_pause_with_duration(tmp_path):
+    handler = make_handler(tmp_path)
+
+    reply = await handler.handle("/pause 1d")
+    assert "PAUSED" in reply
+    assert "left" in reply
+    assert handler.engine.pause.is_paused() is True
+
+
+@pytest.mark.asyncio
+async def test_pause_with_bad_duration_is_rejected(tmp_path):
+    handler = make_handler(tmp_path)
+
+    reply = await handler.handle("/pause whenever")
+    assert "Couldn't read" in reply
+    assert handler.engine.pause.is_paused() is False  # not paused on a bad arg
+
+
+@pytest.mark.asyncio
+async def test_status_shows_pause_state(tmp_path):
+    handler = make_handler(tmp_path)
+    await handler.handle("/pause 4h")
+
+    reply = await handler.handle("/status")
+
+    assert "PAUSED" in reply
 
 
 @pytest.mark.asyncio

@@ -121,6 +121,9 @@ class Settings(BaseSettings):
     log_file: str = "logs/autotrader.log"
     # CSV journal of every trade (open + close P/L) for the /report command.
     trades_log_file: str = "logs/trades.csv"
+    # Where the /pause state is persisted, so a pause (e.g. for NFP) survives
+    # a bot restart. Kept out of the logs dir so it's easy to find/clear.
+    pause_state_file: str = ".pause_state.json"
 
     @model_validator(mode="after")
     def _default_broker_symbol(self) -> "Settings":

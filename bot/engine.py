@@ -11,6 +11,7 @@ from bot.models import Direction, TradeSignal
 from bot.position_monitor import PositionMonitor
 from bot.risk import resolve_lot_size, reward_risk_ratio, take_profits_for_trades
 from bot.risk_guards import DailyLossGuard
+from bot.trade_pause import TradePause
 from bot.signal_parser import GOLD_PIP_SIZE, SignalParser
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,7 @@ class TradingEngine:
         risk_notify: Optional[Callable[[str], Awaitable[None]]] = None,
         journal=None,
         simulator=None,
+        pause: Optional[TradePause] = None,
     ):
         self.settings = settings
         self.parser = parser
@@ -78,6 +80,9 @@ class TradingEngine:
         self.position_monitor = position_monitor
         self.journal = journal
         self.simulator = simulator
+        # Controls whether NEW trades open; cancellations and monitoring run
+        # regardless. Defaults to a file-backed pause so state survives restart.
+        self.pause = pause or TradePause(settings.pause_state_file)
         self.last_signal_summary: Optional[str] = None
         self.last_signal_at: Optional[datetime] = None
         self._recent_signals: dict[tuple, datetime] = {}
@@ -145,6 +150,24 @@ class TradingEngine:
         signal = self.parser.parse(text)
         if signal is None:
             logger.debug("Message did not match a tradable signal, ignoring")
+            return
+
+        # Trading paused (e.g. NFP/FOMC): a real signal arrived but we don't
+        # open new trades. Cancellations were already handled above, and the
+        # position monitor keeps managing anything already open.
+        if self.pause.is_paused():
+            logger.warning(
+                "Trading PAUSED (%s) - skipping signal: %.80s",
+                self.pause.status_text(), text.replace("\n", " "),
+            )
+            if self.notify is not None:
+                try:
+                    await self.notify(
+                        "⏸️ A signal arrived but trading is PAUSED - it was skipped.\n"
+                        f"{self.pause.status_text()}\nSend /resume to trade again."
+                    )
+                except Exception:
+                    logger.exception("Failed to send pause-skip alert")
             return
 
         signal = self._apply_fallback_stop_loss(signal)

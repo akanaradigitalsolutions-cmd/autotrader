@@ -83,7 +83,12 @@ async def build_status_report(
     else:
         account = settings.metaapi_account_id
 
+    pause_line = "Trading: ACTIVE"
+    if engine.pause.is_paused():
+        pause_line = f"Trading: ⏸️ {engine.pause.status_text()}"
+
     return (
+        f"{pause_line}\n"
         f"Mode: {mode}\n"
         f"Account: {account}\n"
         f"Symbol: {settings.symbol} (broker: {settings.broker_symbol})\n"
