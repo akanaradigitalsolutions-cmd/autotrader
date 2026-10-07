@@ -50,6 +50,14 @@ TP_PIPS_PATTERN = re.compile(
     r"(\d{1,4}(?:\.\d+)?)\s*PIPS?\b",
     re.IGNORECASE,
 )
+# "Enter immediately" phrasing: "sell NOW", "at market", "market order",
+# "instant(ly)", "mkt". Deliberately does NOT match a bare "market" on its
+# own, so ordinary words like "Money Management" never trigger it.
+MARKET_NOW_PATTERN = re.compile(
+    r"\bnow\b|\binstant(?:ly)?\b|\bat\s+market\b"
+    r"|\bmarket\s+(?:order|execution|exec|price)\b|\bmkt\b",
+    re.IGNORECASE,
+)
 # For XAUUSD, 1 pip = $0.10 by the common convention these channels use
 # (e.g. entry 4139 / SL 4129 is quoted as a 100-pip stop).
 GOLD_PIP_SIZE = 0.1
@@ -169,6 +177,7 @@ class SignalParser:
             entry_high=entry_high,
             stop_loss=stop_loss,
             take_profits=take_profits,
+            market_now=bool(MARKET_NOW_PATTERN.search(text)),
             raw_text=text,
         )
 

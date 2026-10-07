@@ -95,6 +95,12 @@ class Settings(BaseSettings):
     # Avoids stale unfilled limits; the trade-off is a worse fill when price
     # has already moved past the zone.
     immediate_entry: bool = False
+    # Safety guard for market entries: skip the trade if the live price has
+    # already moved to within this many pips of the signal's stop loss (or
+    # past it) - entering there is an instant/near-instant loss. Protects
+    # "sell now"/"at market" signals and any in-zone market fill. 1 pip =
+    # $0.10, so 10 = $1.00 of required room to the stop. 0 disables the guard.
+    market_entry_min_stop_pips: float = 10.0
     # Paper-trade signals the bot SKIPPED (R:R filter, no-SL, trend filter):
     # follow the market and record whether they'd have hit TP1 or the stop,
     # so you can see if a filtered channel is secretly profitable. Risks

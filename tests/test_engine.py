@@ -727,3 +727,58 @@ async def test_no_retry_after_an_order_was_attempted(monkeypatch):
 
     assert len(broker.placed_orders) == 1  # NOT retried into duplicates
     assert len(alerts) == 1
+
+
+SELL_NOW_SIGNAL = "gold sell now : 4138\nsl : 4148\ntp 1st: 4128\ntp 2nd: 4118"
+
+
+@pytest.mark.asyncio
+async def test_sell_now_fires_at_market_even_below_entry():
+    # Price 4135 is BELOW entry 4138. With zone entry this would wait as a
+    # pending limit; "sell now" must fire at market instead.
+    broker = FakeBroker(bid=4135, ask=4135.2)
+    engine = TradingEngine(make_settings(immediate_entry=False), SignalParser(), broker)
+
+    await engine.handle_message(SELL_NOW_SIGNAL)
+
+    assert len(broker.placed_orders) >= 1
+    # entry_price None == market order (not a pending limit).
+    assert all(entry is None for _sig, _vol, entry in broker.placed_orders)
+
+
+@pytest.mark.asyncio
+async def test_market_entry_skipped_when_price_at_the_stop():
+    # Price 4148 has already reached the sell stop (4148) - entering now would
+    # be an instant loss, so the safety guard must skip it.
+    broker = FakeBroker(bid=4148, ask=4148.2)
+    engine = TradingEngine(make_settings(immediate_entry=False), SignalParser(), broker)
+
+    await engine.handle_message(SELL_NOW_SIGNAL)
+
+    assert broker.placed_orders == []
+
+
+@pytest.mark.asyncio
+async def test_market_entry_allowed_with_room_to_the_stop():
+    # Price 4140 leaves ~8 pips... actually 80 pips ($8) to the 4148 stop -
+    # plenty of room, so the guard allows it.
+    broker = FakeBroker(bid=4140, ask=4140.2)
+    engine = TradingEngine(make_settings(immediate_entry=False), SignalParser(), broker)
+
+    await engine.handle_message(SELL_NOW_SIGNAL)
+
+    assert len(broker.placed_orders) >= 1
+
+
+@pytest.mark.asyncio
+async def test_guard_can_be_disabled():
+    broker = FakeBroker(bid=4148, ask=4148.2)  # at the stop
+    engine = TradingEngine(
+        make_settings(immediate_entry=False, market_entry_min_stop_pips=0),
+        SignalParser(), broker,
+    )
+
+    await engine.handle_message(SELL_NOW_SIGNAL)
+
+    # Guard off -> it places the order (broker would reject invalid stops itself).
+    assert len(broker.placed_orders) >= 1

@@ -17,6 +17,9 @@ class TradeSignal(BaseModel):
     entry_high: Optional[float] = None
     stop_loss: Optional[float] = None
     take_profits: list[float] = []
+    # True when the signal says to enter immediately ("sell now", "at market"),
+    # so the engine fires at market instead of waiting for a zone/limit price.
+    market_now: bool = False
     raw_text: str
 
     @property

@@ -300,3 +300,41 @@ tp 4390"""
     assert signal.entry == 4457.5
     assert signal.stop_loss == 4468
     assert signal.take_profits == [4451, 4444, 4390]
+
+
+def test_market_now_detected_from_sell_now():
+    text = "gold sell now : 4138\nsl : 4148\ntp 1st: 4128\ntp 2nd: 4118"
+    signal = make_parser().parse(text)
+
+    assert signal is not None
+    assert signal.market_now is True
+    assert signal.direction == Direction.SELL
+    assert signal.entry == 4138
+    assert signal.stop_loss == 4148
+    assert signal.take_profits == [4128, 4118]
+
+
+def test_market_now_detected_from_at_market():
+    signal = make_parser().parse("XAUUSD buy at market\nentry 4100\nsl 4090\ntp 4120")
+    assert signal is not None
+    assert signal.market_now is True
+
+
+def test_range_signal_is_not_market_now():
+    signal = make_parser().parse("gold sell 4397-4401\nsl 4411\ntp 4391")
+    assert signal is not None
+    assert signal.market_now is False
+
+
+def test_money_management_text_does_not_trigger_market_now():
+    # "Money Management" contains no standalone now/market-order phrase.
+    signal = make_parser().parse(
+        "gold sell 4138\nsl 4148\ntp 4128\nUse Proper Entry & Money Management"
+    )
+    assert signal is not None
+    assert signal.market_now is False
+
+
+def test_bare_sell_now_teaser_is_not_tradable():
+    # Direction + "now" but no levels - must not parse as a tradable signal.
+    assert make_parser().parse("Gold sell now") is None

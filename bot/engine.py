@@ -609,6 +609,25 @@ class TradingEngine:
                 )
             return
 
+        if entry_price is None:
+            skip_reason = await self._market_entry_blocked_by_stop(signal)
+            if skip_reason is not None:
+                logger.warning(
+                    "Skipping market entry for safety - %s: %s",
+                    skip_reason, self.last_signal_summary,
+                )
+                if self.notify is not None:
+                    try:
+                        await self.notify(
+                            "⚠️ Skipped an immediate (market) entry for safety - "
+                            f"{skip_reason}. The move has already reached the stop, "
+                            f"so entering now would be an instant loss.\n"
+                            f"{self.last_signal_summary}"
+                        )
+                    except Exception:
+                        logger.exception("Failed to send market-entry-skip alert")
+                return
+
         if await self._daily_loss.should_block():
             logger.warning(
                 "Daily loss limit (%.1f%%) reached - not opening new trades today",
@@ -767,6 +786,38 @@ class TradingEngine:
         opposite = Direction.SELL if direction == Direction.BUY else Direction.BUY
         return any(p.direction == opposite for p in positions)
 
+    async def _market_entry_blocked_by_stop(self, signal: TradeSignal) -> Optional[str]:
+        """For a market entry, returns a reason to skip when the live price has
+        already reached/passed the stop (or is within the safety buffer), else
+        None. Protects 'sell now'/'at market' signals and in-zone fills from
+        opening a position that's already an instant or near-instant loss."""
+        if signal.stop_loss is None or self.settings.market_entry_min_stop_pips <= 0:
+            return None
+        buffer = self.settings.market_entry_min_stop_pips * GOLD_PIP_SIZE
+        try:
+            bid, ask = await asyncio.wait_for(
+                self.broker.get_current_price(self.settings.broker_symbol),
+                timeout=BROKER_CALL_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            # Don't block on a price-read failure; a genuinely invalid stop
+            # would still be rejected by the broker.
+            logger.exception("Could not read price for the market-entry safety check")
+            return None
+        price = bid if signal.direction == Direction.SELL else ask
+        pips = self.settings.market_entry_min_stop_pips
+        if signal.direction == Direction.SELL and price >= signal.stop_loss - buffer:
+            return (
+                f"price {price:.2f} is within {pips:.0f} pips of the sell stop "
+                f"{signal.stop_loss:.2f}"
+            )
+        if signal.direction == Direction.BUY and price <= signal.stop_loss + buffer:
+            return (
+                f"price {price:.2f} is within {pips:.0f} pips of the buy stop "
+                f"{signal.stop_loss:.2f}"
+            )
+        return None
+
     async def _resolve_entry_price(self, signal: TradeSignal) -> Optional[float]:
         """Decides whether to fire at market now or place a pending order.
 
@@ -775,8 +826,8 @@ class TradingEngine:
         Otherwise returns the near edge of the zone as a pending limit price,
         so the trade only opens once price actually reaches it.
         """
-        if self.settings.immediate_entry:
-            return None  # always take the market now, never a pending limit
+        if self.settings.immediate_entry or signal.market_now:
+            return None  # take the market now, never a pending limit
         if signal.entry_low is None or signal.entry_high is None:
             return None
 
