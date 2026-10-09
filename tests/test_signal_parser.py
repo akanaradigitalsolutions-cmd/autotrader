@@ -338,3 +338,52 @@ def test_money_management_text_does_not_trigger_market_now():
 def test_bare_sell_now_teaser_is_not_tradable():
     # Direction + "now" but no levels - must not parse as a tradable signal.
     assert make_parser().parse("Gold sell now") is None
+
+
+def test_parses_short_zone_stop_target_format():
+    # "Ben, Gold Trader" format: Short/Stop/Target instead of SELL/SL/TP.
+    text = """Gold Short Zone:4117.7-4128.7
+
+Stop: 4132.7
+
+Target 1: 4113.7
+Target 2: 4110"""
+    signal = make_parser().parse(text)
+
+    assert signal is not None
+    assert signal.direction == Direction.SELL
+    assert signal.entry_low == 4117.7
+    assert signal.entry_high == 4128.7
+    assert signal.stop_loss == 4132.7
+    assert signal.take_profits == [4113.7, 4110.0]
+
+
+def test_parses_buy_with_at_range_and_sl_tp_numbered():
+    text = """Buy Gold @4131.5-4121.5
+
+Sl :4117.5
+
+Tp1: 4135.5
+Tp2: 4139"""
+    signal = make_parser().parse(text)
+
+    assert signal is not None
+    assert signal.direction == Direction.BUY
+    # Range written high-to-low is normalised low-to-high.
+    assert signal.entry_low == 4121.5
+    assert signal.entry_high == 4131.5
+    assert signal.stop_loss == 4117.5
+    assert signal.take_profits == [4135.5, 4139.0]
+
+
+def test_stop_colon_is_read_as_stop_loss():
+    signal = make_parser().parse("gold sell 4100\nStop: 4110\nTarget 1: 4090")
+    assert signal is not None
+    assert signal.stop_loss == 4110.0
+
+
+def test_bare_target_keeps_its_price_not_eaten_as_index():
+    # "Target 4126.7" with no index digit must keep 4126.7 as the price.
+    signal = make_parser().parse("gold sell 4140\nstop 4150\nTarget 4126.7")
+    assert signal is not None
+    assert signal.take_profits == [4126.7]

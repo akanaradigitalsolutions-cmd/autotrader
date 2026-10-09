@@ -33,20 +33,25 @@ INLINE_RANGE_PATTERN = re.compile(
     r"(\d{3,5}(?:\.\d+)?)(?:\s*[-/_]\s*(\d{1,5}(?:\.\d+)?))?"
 )
 SL_PATTERN = re.compile(
-    r"\b(?:S\s*/?\s*L|STOP\s*LOSS)[^\d\n]{0,20}(\d{3,5}(?:\.\d+)?)", re.IGNORECASE
+    r"\b(?:S\s*/?\s*L|STOP(?:\s*LOSS)?)[^\d\n]{0,20}(\d{3,5}(?:\.\d+)?)", re.IGNORECASE
 )
 # The value part accepts slash-separated shorthand lists ("4115/10/5"
 # meaning 4115, 4110, 4105) as used by some channels. TP labels may be
-# plain ("TP:", "TP2:") or ordinal ("TP 1st:", "TP 2nd:").
+# plain ("TP:", "TP2:"), ordinal ("TP 1st:", "TP 2nd:") or worded
+# ("Target 1:", "Target 2:" - some channels never write "TP" at all).
+# TARGETS?(?:\s*\d(?=\D))? swallows the "1"/"2" index after "Target" only
+# when it's followed by a non-digit, so a bare "Target 4152" keeps 4152 as
+# the price instead of eating its first digit as an index.
 TP_ORDINAL = r"(?:\s*\d{1,2}\s*(?:ST|ND|RD|TH)\b)?"
+TP_LABEL = r"(?:T\s*/?\s*P\d?|TAKE\s*PROFIT\d?|TARGETS?(?:\s*\d(?=\D))?)"
 TP_PATTERN = re.compile(
-    r"\b(?:T\s*/?\s*P\d?|TAKE\s*PROFIT\d?)" + TP_ORDINAL + r"[^\d\n]{0,20}"
+    r"\b" + TP_LABEL + TP_ORDINAL + r"[^\d\n]{0,20}"
     r"(\d{3,5}(?:\.\d+)?(?:\s*/\s*\d{1,5}(?:\.\d+)?)*)(?!\s*PIPS?)",
     re.IGNORECASE,
 )
 # Relative TPs, e.g. "TP 1st: 70PIPS" - a distance from entry, not a price.
 TP_PIPS_PATTERN = re.compile(
-    r"\b(?:T\s*/?\s*P\d?|TAKE\s*PROFIT\d?)" + TP_ORDINAL + r"[^\d\n]{0,20}"
+    r"\b" + TP_LABEL + TP_ORDINAL + r"[^\d\n]{0,20}"
     r"(\d{1,4}(?:\.\d+)?)\s*PIPS?\b",
     re.IGNORECASE,
 )
