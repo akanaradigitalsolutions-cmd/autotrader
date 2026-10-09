@@ -1,18 +1,75 @@
+import asyncio
 import logging
-from typing import Awaitable, Callable
+import os
+from datetime import datetime, timezone
+from typing import Awaitable, Callable, Optional
 
 from telethon import TelegramClient, events
+from telethon.errors import FloodWaitError
+
+from bot.aio import externally_cancelled
 
 logger = logging.getLogger(__name__)
 
-MessageHandler = Callable[[str], Awaitable[None]]
+MessageHandler = Callable[[str, Optional[int]], Awaitable[None]]
+CommandHandler = Callable[[str], Awaitable[str]]
+
+# The watchdog makes a real Telegram API call on a fixed interval. Telethon
+# can end up "connected" on a dead TCP link and silently stop receiving
+# updates - no exception is ever raised, so the only way to notice is to
+# probe. After enough consecutive probe failures the client is shut down,
+# which ends run_until_disconnected() and lets the process exit non-zero so
+# systemd restarts it with a fresh connection.
+WATCHDOG_INTERVAL_SECONDS = 60
+WATCHDOG_PROBE_TIMEOUT_SECONDS = 20
+WATCHDOG_MAX_FAILURES = 3
+# Emit a proof-of-life log line roughly every 30 minutes at the 60s interval.
+HEARTBEAT_EVERY_CHECKS = 30
+# The get_me probe only proves request/response traffic works; the update
+# stream that pushes new messages can die separately and silently (seen in
+# production: heartbeats green for hours while no message or command was
+# delivered). catch_up() actively fetches anything missed and re-dispatches
+# it, so run it every few checks as both a recovery and a health probe.
+CATCHUP_EVERY_CHECKS = 5
+CATCHUP_TIMEOUT_SECONDS = 60
+# A FloodWaitError is Telegram rate-limiting us, NOT a dead connection: the
+# link is fine, we simply asked too often. Restarting on it is actively
+# harmful - the fresh process re-queries and floods harder, a loop. Wait the
+# requested time out (plus a small margin) instead, capped so a pathological
+# multi-hour wait still eventually re-probes rather than sleeping forever.
+FLOOD_WAIT_MARGIN_SECONDS = 5
+FLOOD_WAIT_MAX_SLEEP_SECONDS = 900
+
+# Signals delivered late (reconnect backlog, stalled connection) are
+# dangerous to trade: the market has moved since the price levels were
+# written. Anything older than this is logged and dropped, not handled.
+MAX_MESSAGE_AGE_SECONDS = 600
+
+
+def message_age_seconds(message_date: Optional[datetime]) -> float:
+    if message_date is None:
+        return 0.0
+    return (datetime.now(timezone.utc) - message_date).total_seconds()
+
+
+def _die_if_watchdog_crashed(task: "asyncio.Task") -> None:
+    if task.cancelled():
+        return  # normal shutdown path
+    if task.exception() is None:
+        return  # returned normally (it already arranged the restart itself)
+    logger.critical(
+        "Telegram watchdog died unexpectedly - forcing a restart so the bot "
+        "does not keep running unguarded",
+        exc_info=task.exception(),
+    )
+    os._exit(1)
 
 
 class TelegramListener:
-    """Reads messages from a single Telegram channel via a user session.
+    """Reads messages from one or more Telegram channels via a user session.
 
     A user session (not the Bot API) is required because the target
-    channel is one you subscribe to, not one you administer - bots can
+    channels are ones you subscribe to, not ones you administer - bots can
     only read channels/groups they've been added to as admin.
 
     First run will prompt for your phone number + login code interactively
@@ -20,8 +77,26 @@ class TelegramListener:
     """
 
     def __init__(self, api_id: int, api_hash: str, session_name: str, channel: str):
-        self._client = TelegramClient(session_name, api_id, api_hash)
-        self._channel = self._resolve_channel(channel)
+        # catch_up=True makes Telethon fetch missed updates automatically
+        # after its own reconnects too, not just when the watchdog asks.
+        # The stale-message guard below keeps recovered-late signals safe.
+        self._client = TelegramClient(session_name, api_id, api_hash, catch_up=True)
+        # Comma-separated list of channels/chat ids, so multiple signal
+        # sources can be monitored at once (e.g. "-1001422815541,@othersignals").
+        self._channels = [
+            self._resolve_channel(part) for part in channel.split(",") if part.strip()
+        ]
+
+    async def connect(self) -> None:
+        """Log in / connect without starting the event loop.
+
+        Called early in startup so that later failures (e.g. the broker)
+        can be reported to Saved Messages instead of dying silently.
+        """
+        await self._client.start()
+
+    async def send_to_me(self, text: str) -> None:
+        await self._client.send_message("me", text)
 
     @staticmethod
     def _resolve_channel(channel: str) -> str | int:
@@ -30,17 +105,161 @@ class TelegramListener:
         stripped = channel.strip()
         return int(stripped) if stripped.lstrip("-").isdigit() else stripped
 
-    async def start(self, on_message: MessageHandler) -> None:
+    async def start(
+        self, on_message: MessageHandler, on_command: Optional[CommandHandler] = None
+    ) -> None:
         await self._client.start()
-        logger.info("Telegram client started, listening on %s", self._channel)
+        logger.info("Telegram client started, listening on %s", self._channels)
 
-        @self._client.on(events.NewMessage(chats=self._channel))
+        @self._client.on(events.NewMessage(chats=self._channels))
         async def _handler(event) -> None:
             text = event.raw_text or ""
-            logger.debug("Received message: %s", text)
-            await on_message(text)
+            age = message_age_seconds(event.message.date)
+            if age > MAX_MESSAGE_AGE_SECONDS:
+                logger.warning(
+                    "Dropping message from %s delivered %.0fs late (limit %ds): %.60s",
+                    event.chat_id, age, MAX_MESSAGE_AGE_SECONDS, text,
+                )
+                return
+            logger.debug("Received message from %s: %s", event.chat_id, text)
+            await on_message(text, event.chat_id)
 
-        await self._client.run_until_disconnected()
+        if on_command is not None:
+            # Commands are only accepted in Saved Messages ("me") - the chat
+            # with yourself - so no one else can control the bot remotely.
+            # Matches slash commands (with any arguments) as well as the bare
+            # yes/no replies used to confirm a pending /set change.
+            @self._client.on(
+                events.NewMessage(chats="me", pattern=r"(?i)^(/\w+(?:\s.*)?|yes|no|y|n)$")
+            )
+            async def _command_handler(event) -> None:
+                text = event.raw_text or ""
+                if message_age_seconds(event.message.date) > MAX_MESSAGE_AGE_SECONDS:
+                    return
+                logger.info("Received command: %s", text)
+                try:
+                    reply = await on_command(text)
+                except asyncio.CancelledError:
+                    if externally_cancelled():
+                        raise
+                    logger.error("Command %r was cancelled by a library reconnect", text)
+                    reply = "A backend connection reset while handling that - try again."
+                except Exception:
+                    logger.exception("Command %r failed", text)
+                    reply = "Something went wrong handling that command - check the bot logs."
+                await event.respond(reply)
+
+        watchdog = asyncio.create_task(self._watchdog())
+        # Backstop: if the watchdog itself ever dies of an unexpected
+        # exception, the bot would be left unguarded - force a restart
+        # rather than run blind.
+        watchdog.add_done_callback(_die_if_watchdog_crashed)
+        try:
+            await self._client.run_until_disconnected()
+        finally:
+            watchdog.cancel()
+            # Bounded wait: wait_for() can swallow a cancellation if the
+            # probe completes at the same instant, and shutdown must never
+            # be able to hang on that race.
+            await asyncio.wait({watchdog}, timeout=5)
+
+    async def _watchdog(self) -> None:
+        failures = 0
+        catchup_failures = 0
+        checks = 0
+        while True:
+            await asyncio.sleep(WATCHDOG_INTERVAL_SECONDS)
+            checks += 1
+            try:
+                await asyncio.wait_for(
+                    self._client.get_me(), timeout=WATCHDOG_PROBE_TIMEOUT_SECONDS
+                )
+            except asyncio.CancelledError:
+                if externally_cancelled():
+                    raise
+                # A library-internal cancellation (reconnect) must count as
+                # a failed probe, not silently kill the watchdog task.
+                failures += 1
+                logger.warning(
+                    "Telegram health check cancelled by a reconnect (%d/%d)",
+                    failures, WATCHDOG_MAX_FAILURES,
+                )
+                if failures >= WATCHDOG_MAX_FAILURES:
+                    await self._shutdown_dead_connection()
+                    return
+                continue
+            except FloodWaitError as exc:
+                await self._wait_out_flood(exc, "health check")
+                continue
+            except Exception as exc:
+                failures += 1
+                logger.warning(
+                    "Telegram health check failed (%d/%d): %r",
+                    failures, WATCHDOG_MAX_FAILURES, exc,
+                )
+                if failures >= WATCHDOG_MAX_FAILURES:
+                    await self._shutdown_dead_connection()
+                    return
+                continue
+            failures = 0
+
+            if checks % CATCHUP_EVERY_CHECKS == 0:
+                try:
+                    await asyncio.wait_for(
+                        self._client.catch_up(), timeout=CATCHUP_TIMEOUT_SECONDS
+                    )
+                    catchup_failures = 0
+                except asyncio.CancelledError:
+                    if externally_cancelled():
+                        raise
+                    catchup_failures += 1
+                    logger.warning(
+                        "Telegram catch-up cancelled by a reconnect (%d/%d)",
+                        catchup_failures, WATCHDOG_MAX_FAILURES,
+                    )
+                    if catchup_failures >= WATCHDOG_MAX_FAILURES:
+                        await self._shutdown_dead_connection()
+                        return
+                except FloodWaitError as exc:
+                    await self._wait_out_flood(exc, "catch-up")
+                except Exception as exc:
+                    catchup_failures += 1
+                    logger.warning(
+                        "Telegram catch-up failed (%d/%d): %r",
+                        catchup_failures, WATCHDOG_MAX_FAILURES, exc,
+                    )
+                    if catchup_failures >= WATCHDOG_MAX_FAILURES:
+                        await self._shutdown_dead_connection()
+                        return
+
+            if checks % HEARTBEAT_EVERY_CHECKS == 0:
+                logger.info("Heartbeat: Telegram connection healthy")
+
+    async def _wait_out_flood(self, exc: FloodWaitError, probe: str) -> None:
+        # Rate-limit, not a dead link: sleep it out and re-probe. Deliberately
+        # does not touch the failure counter - the connection is healthy.
+        wait = getattr(exc, "seconds", 0) or 0
+        sleep_for = min(wait + FLOOD_WAIT_MARGIN_SECONDS, FLOOD_WAIT_MAX_SLEEP_SECONDS)
+        logger.warning(
+            "Telegram %s rate-limited (FloodWait %ss) - waiting %ss, not restarting",
+            probe, wait, sleep_for,
+        )
+        await asyncio.sleep(sleep_for)
+
+    async def _shutdown_dead_connection(self) -> None:
+        logger.error(
+            "Telegram connection is dead (%d failed health checks in a row) - "
+            "shutting down so systemd restarts the bot with a fresh connection",
+            WATCHDOG_MAX_FAILURES,
+        )
+        try:
+            await asyncio.wait_for(self._client.disconnect(), timeout=15)
+        except Exception:
+            # disconnect() itself can hang on a dead connection; at that point
+            # the only reliable recovery is killing the process so systemd
+            # brings up a clean one.
+            logger.exception("Disconnect hung as well - force-exiting")
+            os._exit(1)
 
     async def stop(self) -> None:
         await self._client.disconnect()

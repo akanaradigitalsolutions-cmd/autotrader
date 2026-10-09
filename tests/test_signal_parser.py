@@ -108,6 +108,184 @@ def test_handles_missing_entry_as_market_order():
     assert signal.entry is None
 
 
+# Formats seen in the "PAID VIP SIGNALS" channel (from user screenshots):
+# emoji/words between keyword and number, "_" and "/" entry ranges, and
+# slash-shorthand TP lists.
+PAID_VIP_SIGNALS = [
+    (
+        "🔽GOLD BUY NOW 🔽\n\nENTRY POINT 👉 4007_4004\n"
+        "TAKE PROFIT 🛡 4012\nTAKE PROFIT 🛡 4016\nTAKE PROFIT 🛡 4020\n"
+        "STOP LOSS 🛑 3997",
+        Direction.BUY, (4004.0, 4007.0), 3997, [4012, 4016, 4020],
+    ),
+    (
+        "Gold sell 4118/21\nSL 4133\n\nTp 4115\nTp 4110\nTp 4110\nTp 4050",
+        Direction.SELL, (4118.0, 4121.0), 4133, [4115, 4110, 4050],
+    ),
+    (
+        "gold buy 4175-72\nsl 4162\ntp 4180\ntp 4190\ntp 4250",
+        Direction.BUY, (4172.0, 4175.0), 4162, [4180, 4190, 4250],
+    ),
+    (
+        "GOlD SEll : 4128/33\nSL : 4140\n💱\nTP : 4115/10/5\nTP : Open\n\nPlZZ ❕❗️AWARE",
+        Direction.SELL, (4128.0, 4133.0), 4140, [4115, 4110, 4105],
+    ),
+    (
+        "GOlD SEll : 4152/56\nSL : 4165\n💱\nTP : 4140/20/03\nTP : Open",
+        Direction.SELL, (4152.0, 4156.0), 4165, [4140, 4120, 4103],
+    ),
+    (
+        "GOlD BUY : 4169/65\nSL : 4159\n💱\nTP : 4190/4220/50\nTP : Open",
+        Direction.BUY, (4165.0, 4169.0), 4159, [4190, 4220, 4250],
+    ),
+]
+
+
+@pytest.mark.parametrize("text,direction,zone,sl,tps", PAID_VIP_SIGNALS)
+def test_parses_paid_vip_channel_formats(text, direction, zone, sl, tps):
+    signal = make_parser().parse(text)
+
+    assert signal is not None
+    assert signal.direction == direction
+    assert (signal.entry_low, signal.entry_high) == zone
+    assert signal.stop_loss == sl
+    assert signal.take_profits == tps
+
+
+# Formats from the "Gold Sell/Buy Zone @ ..." channel (user screenshots).
+ZONE_CHANNEL_SIGNALS = [
+    (
+        "Gold Sell Zone @ 4058 - 4063 🔴\n\nStoploss: 4068\n"
+        "Take profits: 4053 / 4051 / 4049",
+        Direction.SELL, (4058.0, 4063.0), 4068, [4053, 4051, 4049],
+    ),
+    (
+        "Gold Buy Now @ 4102-4107 🟢\n\nStoploss: 4097\n"
+        "Take profits: 4112 / 4114 / 4116",
+        Direction.BUY, (4102.0, 4107.0), 4097, [4112, 4114, 4116],
+    ),
+    (
+        "Gold Sell Zone @ 4103 - 4108 🔴\n\nStoploss: 4112\n"
+        "Take profits: 4098 / 4096 / 4094",
+        Direction.SELL, (4103.0, 4108.0), 4112, [4098, 4096, 4094],
+    ),
+]
+
+
+@pytest.mark.parametrize("text,direction,zone,sl,tps", ZONE_CHANNEL_SIGNALS)
+def test_parses_zone_channel_formats(text, direction, zone, sl, tps):
+    signal = make_parser().parse(text)
+
+    assert signal is not None
+    assert signal.direction == direction
+    assert (signal.entry_low, signal.entry_high) == zone
+    assert signal.stop_loss == sl
+    assert signal.take_profits == tps
+
+
+# Formats from the pips-based channel: "GOLD BUY NOW : 4139" with TPs as
+# pip distances from entry (1 gold pip = $0.10).
+PIPS_CHANNEL_SIGNALS = [
+    (
+        "GOLD BUY NOW : 4139 ✅✅\n\nSL : 4129\nTP 1st: 70PIPS\nTP 2nd: 150PIPS\n\n"
+        "Use Proper Entry & Money Management ‼️",
+        Direction.BUY, (4139.0, 4139.0), 4129, [4146.0, 4154.0],
+    ),
+    (
+        "GOLD BUY NOW : 4160 ✅✅\n\nSL : 4150\nTP 1st: 70PIPS\nTP 2nd: 150PIPS\n\n"
+        "Use Proper Entry & Money Management ‼️",
+        Direction.BUY, (4160.0, 4160.0), 4150, [4167.0, 4175.0],
+    ),
+    (
+        "GOLD BUY NOW : 4065 ✅✅\n\nSL : 4055\nTP 1st: 70PIPS\nTP 2nd: 150PIPS",
+        Direction.BUY, (4065.0, 4065.0), 4055, [4072.0, 4080.0],
+    ),
+    (
+        # Synthetic sell variant: pips TPs must go BELOW entry for a sell.
+        "GOLD SELL NOW : 4139\nSL : 4149\nTP 1st: 70PIPS\nTP 2nd: 150PIPS",
+        Direction.SELL, (4139.0, 4139.0), 4149, [4132.0, 4124.0],
+    ),
+]
+
+
+@pytest.mark.parametrize("text,direction,zone,sl,tps", PIPS_CHANNEL_SIGNALS)
+def test_parses_pips_based_tp_formats(text, direction, zone, sl, tps):
+    signal = make_parser().parse(text)
+
+    assert signal is not None
+    assert signal.direction == direction
+    assert (signal.entry_low, signal.entry_high) == zone
+    assert signal.stop_loss == sl
+    assert signal.take_profits == tps
+
+
+def test_pips_value_is_never_mistaken_for_an_absolute_tp_price():
+    # "150PIPS" must not be read as an absolute TP of 150.
+    text = "GOLD BUY NOW : 4139\nSL : 4129\nTP 2nd: 150PIPS"
+    signal = make_parser().parse(text)
+
+    assert signal is not None
+    assert 150.0 not in signal.take_profits
+    assert signal.take_profits == [4154.0]
+
+
+# Single-TP "Now : <price>" channel (user screenshots).
+SINGLE_TP_CHANNEL_SIGNALS = [
+    (
+        "Gold Sell Now : 4077\nSL : 4085\nTP : 4062",
+        Direction.SELL, (4077.0, 4077.0), 4085, [4062],
+    ),
+    (
+        "Gold Buy Now : 4067\nSL : 4060\nTP : 4101",
+        Direction.BUY, (4067.0, 4067.0), 4060, [4101],
+    ),
+    (
+        "Gold Buy Now : 4008\nSL : 4000\nTP : 4031",
+        Direction.BUY, (4008.0, 4008.0), 4000, [4031],
+    ),
+]
+
+
+@pytest.mark.parametrize("text,direction,zone,sl,tps", SINGLE_TP_CHANNEL_SIGNALS)
+def test_parses_single_tp_now_format(text, direction, zone, sl, tps):
+    signal = make_parser().parse(text)
+
+    assert signal is not None
+    assert signal.direction == direction
+    assert (signal.entry_low, signal.entry_high) == zone
+    assert signal.stop_loss == sl
+    assert signal.take_profits == tps
+
+
+def test_thousands_separator_commas_are_stripped():
+    signal = make_parser().parse(
+        "Gold Sell Zone @ 4,118 - 4,122\nStoploss: 4,129\nTake profits: 4,113 / 4,105"
+    )
+    assert signal is not None
+    assert (signal.entry_low, signal.entry_high) == (4118.0, 4122.0)
+    assert signal.stop_loss == 4129.0
+    assert signal.take_profits == [4113.0, 4105.0]
+
+
+def test_direction_word_with_repeated_trailing_letters_still_parses():
+    # Fat-fingered direction words ("selll", "buyy") must not lose a signal.
+    sell = make_parser().parse("gold selll 4400-4404\nsl 4410\ntp 4394\ntp 4380")
+    assert sell is not None
+    assert sell.direction == Direction.SELL
+    assert (sell.entry_low, sell.entry_high) == (4400.0, 4404.0)
+
+    buy = make_parser().parse("gold buyy 4300-4305\nsl 4290\ntp 4315\ntp 4325")
+    assert buy is not None
+    assert buy.direction == Direction.BUY
+
+
+def test_teaser_posts_without_any_price_level_are_not_signals():
+    # Channels post hype messages before the real signal - these must not
+    # be treated as tradable signals.
+    assert make_parser().parse("Gold Buy Now") is None
+    assert make_parser().parse("Gold Sell Now") is None
+
+
 def test_parses_real_world_lowercase_shorthand_signal():
     text = """gold sell 4455-60
 sl 4468
@@ -122,3 +300,90 @@ tp 4390"""
     assert signal.entry == 4457.5
     assert signal.stop_loss == 4468
     assert signal.take_profits == [4451, 4444, 4390]
+
+
+def test_market_now_detected_from_sell_now():
+    text = "gold sell now : 4138\nsl : 4148\ntp 1st: 4128\ntp 2nd: 4118"
+    signal = make_parser().parse(text)
+
+    assert signal is not None
+    assert signal.market_now is True
+    assert signal.direction == Direction.SELL
+    assert signal.entry == 4138
+    assert signal.stop_loss == 4148
+    assert signal.take_profits == [4128, 4118]
+
+
+def test_market_now_detected_from_at_market():
+    signal = make_parser().parse("XAUUSD buy at market\nentry 4100\nsl 4090\ntp 4120")
+    assert signal is not None
+    assert signal.market_now is True
+
+
+def test_range_signal_is_not_market_now():
+    signal = make_parser().parse("gold sell 4397-4401\nsl 4411\ntp 4391")
+    assert signal is not None
+    assert signal.market_now is False
+
+
+def test_money_management_text_does_not_trigger_market_now():
+    # "Money Management" contains no standalone now/market-order phrase.
+    signal = make_parser().parse(
+        "gold sell 4138\nsl 4148\ntp 4128\nUse Proper Entry & Money Management"
+    )
+    assert signal is not None
+    assert signal.market_now is False
+
+
+def test_bare_sell_now_teaser_is_not_tradable():
+    # Direction + "now" but no levels - must not parse as a tradable signal.
+    assert make_parser().parse("Gold sell now") is None
+
+
+def test_parses_short_zone_stop_target_format():
+    # "Ben, Gold Trader" format: Short/Stop/Target instead of SELL/SL/TP.
+    text = """Gold Short Zone:4117.7-4128.7
+
+Stop: 4132.7
+
+Target 1: 4113.7
+Target 2: 4110"""
+    signal = make_parser().parse(text)
+
+    assert signal is not None
+    assert signal.direction == Direction.SELL
+    assert signal.entry_low == 4117.7
+    assert signal.entry_high == 4128.7
+    assert signal.stop_loss == 4132.7
+    assert signal.take_profits == [4113.7, 4110.0]
+
+
+def test_parses_buy_with_at_range_and_sl_tp_numbered():
+    text = """Buy Gold @4131.5-4121.5
+
+Sl :4117.5
+
+Tp1: 4135.5
+Tp2: 4139"""
+    signal = make_parser().parse(text)
+
+    assert signal is not None
+    assert signal.direction == Direction.BUY
+    # Range written high-to-low is normalised low-to-high.
+    assert signal.entry_low == 4121.5
+    assert signal.entry_high == 4131.5
+    assert signal.stop_loss == 4117.5
+    assert signal.take_profits == [4135.5, 4139.0]
+
+
+def test_stop_colon_is_read_as_stop_loss():
+    signal = make_parser().parse("gold sell 4100\nStop: 4110\nTarget 1: 4090")
+    assert signal is not None
+    assert signal.stop_loss == 4110.0
+
+
+def test_bare_target_keeps_its_price_not_eaten_as_index():
+    # "Target 4126.7" with no index digit must keep 4126.7 as the price.
+    signal = make_parser().parse("gold sell 4140\nstop 4150\nTarget 4126.7")
+    assert signal is not None
+    assert signal.take_profits == [4126.7]

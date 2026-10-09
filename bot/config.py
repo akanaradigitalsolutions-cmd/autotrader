@@ -1,3 +1,4 @@
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -8,14 +9,35 @@ class Settings(BaseSettings):
     telegram_api_id: int
     telegram_api_hash: str
     telegram_session_name: str = "autotrader"
-    telegram_channel: str  # e.g. "@some_signal_channel" or numeric chat id
+    # e.g. "@some_signal_channel" or numeric chat id. Comma-separate multiple
+    # channels to monitor more than one signal source at once.
+    telegram_channel: str
+
+    # Which broker backend to use:
+    #   "metaapi"  - MetaApi.cloud hosted terminal (works from any OS)
+    #   "mt5local" - MT5 terminal running on THIS machine (Windows only,
+    #                official MetaTrader5 package, no cloud middleman)
+    broker_backend: str = "metaapi"
 
     # MetaApi.cloud (hosted MT5 connection, no local terminal/Windows required)
-    metaapi_token: str
-    metaapi_account_id: str
+    metaapi_token: str = ""
+    metaapi_account_id: str = ""
+
+    # mt5local backend. Leave MT5_LOGIN=0 to attach to whatever account the
+    # running terminal is already logged into (recommended: log in once in
+    # the MT5 app on the VPS and keep it running).
+    mt5_login: int = 0
+    mt5_password: str = ""
+    mt5_server: str = ""
+    # Optional full path to terminal64.exe if MT5 is not in the default location.
+    mt5_terminal_path: str = ""
 
     # Trading
     symbol: str = "XAUUSD"
+    # Exact symbol name your MT5 broker uses for orders/price lookups - may
+    # differ from `symbol` above (e.g. "XAUUSDm" on micro/cent accounts).
+    # Defaults to `symbol` if not set.
+    broker_symbol: str = ""
     lot_size: float = 0.01
     max_lot_size: float = 1.0
     # How many separate trades to open per signal, each using one of the
@@ -26,10 +48,101 @@ class Settings(BaseSettings):
     # Safety
     dry_run: bool = True
     max_open_positions: int = 3
+    # Refuse to trade a signal when no stop loss could be parsed from it -
+    # a naked position from a misread message is worse than a missed trade.
+    require_stop_loss: bool = True
+    # Some channels repost the same signal as a reminder minutes later; a
+    # signal with identical levels seen again within this window is not
+    # traded twice. 0 disables the guard.
+    duplicate_signal_window_minutes: int = 120
+    # Conflict guard: never hold a BUY and a SELL on the same symbol at once
+    # (following several channels, they contradict each other and you get
+    # stopped out both ways). Skips a signal opposite to what's already open.
+    prevent_opposite_positions: bool = True
+    # After the nearest take-profit (TP1) is hit, move the remaining
+    # position(s) stop loss to their entry price, so a runner can't turn a
+    # banked winner back into a loss.
+    breakeven_after_tp1: bool = True
+    # Circuit breaker: stop opening new trades once the day's realized loss
+    # reaches this percent of the day-start balance. 0 disables. Resets at
+    # UTC midnight (and on restart).
+    daily_loss_limit_percent: float = 5.0
+    # Every signal's reward:risk (TP1 distance vs stop distance) is logged;
+    # a signal below this ratio is flagged as low quality (TP1 nearer than
+    # the stop). Monitoring only - it does not block the trade.
+    min_reward_risk: float = 1.0
+    # Hard filter: skip (don't trade) any signal whose reward:risk is below
+    # this. 0 disables (default). Set SKIP_REWARD_RISK_BELOW=1.0 in .env to
+    # skip signals where TP1 is closer than the stop. A signal with no
+    # computable R:R (no entry/stop/TP) is not filtered here.
+    skip_reward_risk_below: float = 0.0
+    # Trend filter: skip signals against the higher-timeframe trend (a BUY
+    # below the EMA, or a SELL above it). "off" | "shadow" (only logs what it
+    # would skip, still trades - use this to measure it first) | "on".
+    trend_filter: str = "off"
+    trend_ema_period: int = 50
+    trend_timeframe: str = "H1"
+    # Cancel a pending (limit) order that hasn't filled within this many
+    # minutes, so a stale signal can't fill hours later into a reversed
+    # market. 0 disables (pending orders stay good-till-cancelled).
+    pending_order_expiry_minutes: int = 0
+    # When a signal has NO stop loss (some channels manage it "live"), apply
+    # a synthetic stop this many pips from entry so the trade is protected.
+    # 0 = keep refusing no-SL signals (safest). 1 gold pip = $0.10.
+    fallback_stop_loss_pips: float = 0.0
+    # Enter at market as soon as a signal fires, even if price is outside the
+    # entry zone, instead of placing a pending limit order and waiting.
+    # Avoids stale unfilled limits; the trade-off is a worse fill when price
+    # has already moved past the zone.
+    immediate_entry: bool = False
+    # Safety guard for market entries: skip the trade if the live price has
+    # already moved to within this many pips of the signal's stop loss (or
+    # past it) - entering there is an instant/near-instant loss. Protects
+    # "sell now"/"at market" signals and any in-zone market fill. 1 pip =
+    # $0.10, so 10 = $1.00 of required room to the stop. 0 disables the guard.
+    market_entry_min_stop_pips: float = 10.0
+    # Paper-trade signals the bot SKIPPED (R:R filter, no-SL, trend filter):
+    # follow the market and record whether they'd have hit TP1 or the stop,
+    # so you can see if a filtered channel is secretly profitable. Risks
+    # nothing. /simreport summarizes it. Written to its own log file.
+    simulate_skipped_signals: bool = False
+    simulate_stop_loss_pips: float = 120.0  # sim stop for signals with no SL
+    simulate_timeout_hours: int = 24
+    simulated_trades_log_file: str = "logs/sim_trades.csv"
+    # Channels to PAPER-TRADE only, never execute for real - a comma-separated
+    # list of chat ids (same values as TELEGRAM_CHANNEL). Signals from these
+    # are recorded to the sim journal and shown in /simreport, so you can vet a
+    # new/untrusted channel's win rate on the live market without risking money
+    # while your other channels keep trading. The channel must ALSO be in
+    # TELEGRAM_CHANNEL for the bot to receive its messages. Empty = none.
+    simulate_only_channels: str = ""
+    # Honour channel cancellations ("don't trade it", "cancel", "no trade"):
+    # skip a not-yet-opened signal and close any position already opened for
+    # the cancelled signal (matched by its price levels).
+    honor_cancellations: bool = True
+    # Trailing stop (profit lock). Once a position is this many pips in
+    # profit, trail its stop this far behind the best price, so a reversal
+    # exits in profit instead of at the original stop. 1 gold pip = $0.10.
+    # trailing_activate_pips = 0 disables it. Note: the stop is trailed on
+    # the monitor's polling interval, so it locks sustained moves - it can't
+    # catch a fast spike-and-reverse between checks.
+    trailing_activate_pips: float = 50.0
+    trailing_distance_pips: float = 15.0
 
     # Logging
     log_level: str = "INFO"
     log_file: str = "logs/autotrader.log"
+    # CSV journal of every trade (open + close P/L) for the /report command.
+    trades_log_file: str = "logs/trades.csv"
+    # Where the /pause state is persisted, so a pause (e.g. for NFP) survives
+    # a bot restart. Kept out of the logs dir so it's easy to find/clear.
+    pause_state_file: str = ".pause_state.json"
+
+    @model_validator(mode="after")
+    def _default_broker_symbol(self) -> "Settings":
+        if not self.broker_symbol:
+            self.broker_symbol = self.symbol
+        return self
 
 
 def load_settings() -> Settings:
