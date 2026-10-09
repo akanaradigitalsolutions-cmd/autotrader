@@ -135,11 +135,12 @@ async def run() -> None:
     # Moves runner positions to breakeven after their TP1 hits.
     monitor_task = asyncio.create_task(monitor.run())
     # Paper-trades skipped signals so /simreport can show if a filtered
-    # channel would have been profitable.
-    sim_task = (
-        asyncio.create_task(simulator.run())
-        if settings.simulate_skipped_signals else None
+    # channel would have been profitable. Also needed when any channel is
+    # simulate-only (those are always paper-traded, regardless of the flag).
+    sim_enabled = settings.simulate_skipped_signals or bool(
+        settings.simulate_only_channels.strip()
     )
+    sim_task = asyncio.create_task(simulator.run()) if sim_enabled else None
 
     # Watches the MetaApi side the same way the listener watches Telegram:
     # if broker calls keep failing, the process exits and systemd restarts

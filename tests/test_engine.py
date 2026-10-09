@@ -782,3 +782,58 @@ async def test_guard_can_be_disabled():
 
     # Guard off -> it places the order (broker would reject invalid stops itself).
     assert len(broker.placed_orders) >= 1
+
+
+class FakeSimulator:
+    def __init__(self):
+        self.added = []
+
+    def add(self, source, symbol, direction, entry, stop_loss, take_profit, reason):
+        self.added.append((source, symbol, direction, entry, stop_loss, take_profit, reason))
+
+
+@pytest.mark.asyncio
+async def test_simulate_only_channel_is_paper_traded_not_executed():
+    broker = FakeBroker(bid=4316, ask=4316.2)  # in-zone -> would normally fill
+    sim = FakeSimulator()
+    engine = TradingEngine(
+        make_settings(simulate_only_channels="-100"),
+        SignalParser(), broker, simulator=sim,
+    )
+
+    await engine.handle_message(SELL_SIGNAL, source=-100)
+
+    assert broker.placed_orders == []        # never executed for real
+    assert len(sim.added) == 1               # paper-traded instead
+    assert sim.added[0][0] == -100
+
+
+@pytest.mark.asyncio
+async def test_non_simulate_channel_still_trades_for_real():
+    broker = FakeBroker(bid=4316, ask=4316.2)
+    sim = FakeSimulator()
+    engine = TradingEngine(
+        make_settings(simulate_only_channels="-100"),
+        SignalParser(), broker, simulator=sim,
+    )
+
+    # A DIFFERENT channel must still trade live and not be simulated.
+    await engine.handle_message(SELL_SIGNAL, source=-200)
+
+    assert len(broker.placed_orders) >= 1
+    assert sim.added == []
+
+
+@pytest.mark.asyncio
+async def test_simulate_only_works_even_with_skipped_sim_disabled():
+    # simulate_skipped_signals defaults off; simulate-only must still run.
+    broker = FakeBroker(bid=4316, ask=4316.2)
+    sim = FakeSimulator()
+    engine = TradingEngine(
+        make_settings(simulate_only_channels="-100", simulate_skipped_signals=False),
+        SignalParser(), broker, simulator=sim,
+    )
+
+    await engine.handle_message(SELL_SIGNAL, source=-100)
+
+    assert len(sim.added) == 1

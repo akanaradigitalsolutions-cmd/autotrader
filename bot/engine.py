@@ -83,6 +83,13 @@ class TradingEngine:
         # Controls whether NEW trades open; cancellations and monitoring run
         # regardless. Defaults to a file-backed pause so state survives restart.
         self.pause = pause or TradePause(settings.pause_state_file)
+        # Chat ids to paper-trade only (never execute), so a new channel can be
+        # vetted on the live market without risking money.
+        self._simulate_only_channels = {
+            int(part.strip())
+            for part in settings.simulate_only_channels.split(",")
+            if part.strip().lstrip("-").isdigit()
+        }
         self.last_signal_summary: Optional[str] = None
         self.last_signal_at: Optional[datetime] = None
         self._recent_signals: dict[tuple, datetime] = {}
@@ -95,9 +102,14 @@ class TradingEngine:
         self._cancelled: dict[tuple, datetime] = {}
         self._daily_loss = DailyLossGuard(broker, settings.daily_loss_limit_percent)
 
-    def _simulate(self, signal: TradeSignal, source, reason: str) -> None:
-        """Paper-trade a signal the bot chose not to execute."""
-        if not self.settings.simulate_skipped_signals or self.simulator is None:
+    def _simulate(self, signal: TradeSignal, source, reason: str, force: bool = False) -> None:
+        """Paper-trade a signal the bot chose not to execute.
+
+        `force` runs the simulation even when SIMULATE_SKIPPED_SIGNALS is off
+        (used for simulate-only channels, which are always paper-traded)."""
+        if self.simulator is None:
+            return
+        if not force and not self.settings.simulate_skipped_signals:
             return
         stop = signal.stop_loss
         if stop is None and signal.entry is not None:
@@ -198,6 +210,18 @@ class TradingEngine:
                 "Skipping signal the channel already cancelled: %s",
                 self.last_signal_summary,
             )
+            return
+
+        # Simulate-only channels are paper-traded and never sent to the broker,
+        # so a new/untrusted channel can be vetted without risking money while
+        # the rest trade live. Done before the risk filters so the channel's
+        # full, unfiltered performance is measured.
+        if source is not None and source in self._simulate_only_channels:
+            logger.info(
+                "Simulate-only channel %s - paper-trading, NOT executing: %s",
+                source, self.last_signal_summary,
+            )
+            self._simulate(signal, source, "simulate-only channel", force=True)
             return
 
         if signal.stop_loss is None and self.settings.require_stop_loss:

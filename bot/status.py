@@ -63,6 +63,8 @@ async def build_status_report(
         else "pending_expiry=off"
     )
     sim = "sim=on" if settings.simulate_skipped_signals else "sim=off"
+    if settings.simulate_only_channels.strip():
+        sim += f" sim_only=[{settings.simulate_only_channels.strip()}]"
     entry_mode = "entry=market" if settings.immediate_entry else "entry=zone"
     now_guard = (
         f"now_guard={settings.market_entry_min_stop_pips:.0f}p"

@@ -109,6 +109,13 @@ class Settings(BaseSettings):
     simulate_stop_loss_pips: float = 120.0  # sim stop for signals with no SL
     simulate_timeout_hours: int = 24
     simulated_trades_log_file: str = "logs/sim_trades.csv"
+    # Channels to PAPER-TRADE only, never execute for real - a comma-separated
+    # list of chat ids (same values as TELEGRAM_CHANNEL). Signals from these
+    # are recorded to the sim journal and shown in /simreport, so you can vet a
+    # new/untrusted channel's win rate on the live market without risking money
+    # while your other channels keep trading. The channel must ALSO be in
+    # TELEGRAM_CHANNEL for the bot to receive its messages. Empty = none.
+    simulate_only_channels: str = ""
     # Honour channel cancellations ("don't trade it", "cancel", "no trade"):
     # skip a not-yet-opened signal and close any position already opened for
     # the cancelled signal (matched by its price levels).
