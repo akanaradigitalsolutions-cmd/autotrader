@@ -116,6 +116,16 @@ class Settings(BaseSettings):
     # while your other channels keep trading. The channel must ALSO be in
     # TELEGRAM_CHANNEL for the bot to receive its messages. Empty = none.
     simulate_only_channels: str = ""
+    # Strategy overrides that apply to SIMULATION only, so you can forward-test
+    # different settings than you trade live:
+    #  - sim_skip_reward_risk_below: for simulate-only channels, skip paper-
+    #    trading a signal whose R:R is below this. 0 = simulate every signal.
+    #  - sim_trailing_*: model a trailing stop inside the paper-trade. The live
+    #    TRAILING_* settings never touch the simulator. 0 = no sim trailing.
+    #    (Approximate - the sim polls price, so it trails off sampled prices.)
+    sim_skip_reward_risk_below: float = 0.0
+    sim_trailing_activate_pips: float = 0.0
+    sim_trailing_distance_pips: float = 0.0
     # Honour channel cancellations ("don't trade it", "cancel", "no trade"):
     # skip a not-yet-opened signal and close any position already opened for
     # the cancelled signal (matched by its price levels).

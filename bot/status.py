@@ -65,6 +65,13 @@ async def build_status_report(
     sim = "sim=on" if settings.simulate_skipped_signals else "sim=off"
     if settings.simulate_only_channels.strip():
         sim += f" sim_only=[{settings.simulate_only_channels.strip()}]"
+    if settings.sim_skip_reward_risk_below > 0:
+        sim += f" sim_rr<{settings.sim_skip_reward_risk_below:.1f}"
+    if settings.sim_trailing_activate_pips > 0 and settings.sim_trailing_distance_pips > 0:
+        sim += (
+            f" sim_trail={settings.sim_trailing_activate_pips:.0f}/"
+            f"{settings.sim_trailing_distance_pips:.0f}p"
+        )
     entry_mode = "entry=market" if settings.immediate_entry else "entry=zone"
     now_guard = (
         f"now_guard={settings.market_entry_min_stop_pips:.0f}p"

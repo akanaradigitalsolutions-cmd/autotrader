@@ -245,9 +245,20 @@ class TradingEngine:
 
         # Simulate-only channels are paper-traded and never sent to the broker,
         # so a new/untrusted channel can be vetted without risking money while
-        # the rest trade live. Done before the risk filters so the channel's
-        # full, unfiltered performance is measured.
+        # the rest trade live.
         if source is not None and source in self._simulate_only_channels:
+            # Optional sim-only R:R filter, independent of the live one, so you
+            # can forward-test "only take R:R >= X from this channel".
+            if (
+                self.settings.sim_skip_reward_risk_below > 0
+                and rr is not None
+                and rr < self.settings.sim_skip_reward_risk_below
+            ):
+                logger.info(
+                    "Simulate-only: skipping R:R %.2f < sim filter %.2f: %s",
+                    rr, self.settings.sim_skip_reward_risk_below, self.last_signal_summary,
+                )
+                return
             logger.info(
                 "Simulate-only channel %s - paper-trading, NOT executing: %s",
                 source, self.last_signal_summary,

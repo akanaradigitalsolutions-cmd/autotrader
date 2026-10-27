@@ -890,3 +890,33 @@ async def test_edit_to_cancel_closes_even_an_already_traded_message():
         source=-1, message_id=3, is_edit=True,
     )
     assert len(broker.closed) == len(broker.placed_orders)
+
+
+@pytest.mark.asyncio
+async def test_sim_only_rr_filter_skips_low_rr_signals():
+    broker = FakeBroker(bid=4316, ask=4316.2)
+    sim = FakeSimulator()
+    # SELL_SIGNAL R:R is ~0.71; a sim filter of 1.0 should skip it entirely.
+    engine = TradingEngine(
+        make_settings(simulate_only_channels="-100", sim_skip_reward_risk_below=1.0),
+        SignalParser(), broker, simulator=sim,
+    )
+
+    await engine.handle_message(SELL_SIGNAL, source=-100)
+
+    assert sim.added == []             # below sim R:R filter -> not paper-traded
+    assert broker.placed_orders == []  # and never executed
+
+
+@pytest.mark.asyncio
+async def test_sim_only_rr_filter_allows_high_enough_rr():
+    broker = FakeBroker(bid=4316, ask=4316.2)
+    sim = FakeSimulator()
+    engine = TradingEngine(
+        make_settings(simulate_only_channels="-100", sim_skip_reward_risk_below=0.5),
+        SignalParser(), broker, simulator=sim,
+    )
+
+    await engine.handle_message(SELL_SIGNAL, source=-100)
+
+    assert len(sim.added) == 1         # 0.71 >= 0.5 -> paper-traded

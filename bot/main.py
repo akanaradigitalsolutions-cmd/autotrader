@@ -106,7 +106,9 @@ async def run() -> None:
     )
     sim_journal = TradeJournal(settings.simulated_trades_log_file)
     simulator = SignalSimulator(
-        broker, sim_journal, GOLD_PIP_SIZE, settings.simulate_timeout_hours
+        broker, sim_journal, GOLD_PIP_SIZE, settings.simulate_timeout_hours,
+        trailing_activate_pips=settings.sim_trailing_activate_pips,
+        trailing_distance_pips=settings.sim_trailing_distance_pips,
     )
     # File-backed so a pause (e.g. for NFP) survives a bot restart.
     pause = TradePause(settings.pause_state_file)
