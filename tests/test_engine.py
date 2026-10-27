@@ -837,3 +837,56 @@ async def test_simulate_only_works_even_with_skipped_sim_disabled():
     await engine.handle_message(SELL_SIGNAL, source=-100)
 
     assert len(sim.added) == 1
+
+
+@pytest.mark.asyncio
+async def test_edit_of_already_traded_message_does_not_retrade():
+    broker = FakeBroker(bid=4316, ask=4316.2)
+    engine = TradingEngine(make_settings(), SignalParser(), broker)
+
+    await engine.handle_message(SELL_SIGNAL, source=-1, message_id=5)
+    opened = len(broker.placed_orders)
+    assert opened >= 1
+
+    # Admin edits the SAME message to different levels - must NOT open again.
+    await engine.handle_message(
+        "gold sell 4310-14\nsl 4320\ntp 4300", source=-1, message_id=5, is_edit=True
+    )
+    assert len(broker.placed_orders) == opened
+
+
+@pytest.mark.asyncio
+async def test_edit_that_fixes_a_rejected_signal_gets_traded():
+    broker = FakeBroker(bid=4006, ask=4006.2)
+    engine = TradingEngine(make_settings(), SignalParser(), broker)
+
+    # Original is a broken SELL (stop BELOW entry) - rejected, never traded.
+    await engine.handle_message(
+        "gold sell now 4006\nsl 3996\ntp 4016\ntp 4026", source=-1, message_id=9
+    )
+    assert broker.placed_orders == []
+
+    # Admin edits it to the correct version - now it should trade.
+    await engine.handle_message(
+        "gold sell now 4006\nsl 4016\ntp 3996\ntp 3986",
+        source=-1, message_id=9, is_edit=True,
+    )
+    assert len(broker.placed_orders) >= 1
+
+
+@pytest.mark.asyncio
+async def test_edit_to_cancel_closes_even_an_already_traded_message():
+    broker = FakeBroker(bid=4057, ask=4057)
+    engine = TradingEngine(make_settings(), SignalParser(), broker)
+
+    await engine.handle_message(
+        "gold sell 4055-59\nsl 4067\ntp 4050\ntp 4034\ntp 3955", source=-1, message_id=3
+    )
+    assert len(broker.placed_orders) >= 1
+
+    # The channel edits the message to a cancellation - must still close.
+    await engine.handle_message(
+        "gold sell 4055-59 sl 4067 tp 4050 tp 4034 tp 3955\ndon't trade it",
+        source=-1, message_id=3, is_edit=True,
+    )
+    assert len(broker.closed) == len(broker.placed_orders)

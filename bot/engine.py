@@ -90,6 +90,9 @@ class TradingEngine:
             for part in settings.simulate_only_channels.split(",")
             if part.strip().lstrip("-").isdigit()
         }
+        # Telegram message ids we've opened a trade for, so an EDIT of the same
+        # message doesn't open a second position. Pruned on a rolling window.
+        self._traded_message_ids: dict[int, datetime] = {}
         self.last_signal_summary: Optional[str] = None
         self.last_signal_at: Optional[datetime] = None
         self._recent_signals: dict[tuple, datetime] = {}
@@ -154,14 +157,42 @@ class TradingEngine:
         if attr == "daily_loss_limit_percent":
             self._daily_loss.limit_percent = value
 
-    async def handle_message(self, text: str, source: Optional[int] = None) -> None:
+    async def handle_message(
+        self,
+        text: str,
+        source: Optional[int] = None,
+        message_id: Optional[int] = None,
+        is_edit: bool = False,
+    ) -> None:
         if self.settings.honor_cancellations and CANCEL_PATTERN.search(text):
+            # Cancellations are honoured even on an edit (a channel may edit a
+            # signal to "cancelled"), and even for an already-traded message.
             await self._handle_cancellation(text, source)
             return
 
         signal = self.parser.parse(text)
         if signal is None:
             logger.debug("Message did not match a tradable signal, ignoring")
+            return
+
+        # An edit of a message we already traded must not open a SECOND trade
+        # off the new levels - alert instead so you can adjust the open position
+        # manually. (A corrected/previously-rejected signal was never traded, so
+        # it falls through and gets its chance below.)
+        if is_edit and message_id is not None and self._already_traded(message_id):
+            logger.warning(
+                "Message %s edited after we already traded it - not re-trading: %.80s",
+                message_id, text.replace("\n", " "),
+            )
+            if self.notify is not None:
+                try:
+                    await self.notify(
+                        "✏️ A signal I already traded was edited. I did NOT open a "
+                        "second trade. If the levels changed, review the open "
+                        "position in MT5 manually."
+                    )
+                except Exception:
+                    logger.exception("Failed to send edit alert")
             return
 
         # Trading paused (e.g. NFP/FOMC): a real signal arrived but we don't
@@ -313,6 +344,11 @@ class TradingEngine:
                 "TREND FILTER (shadow) would skip %s %s - %s",
                 signal.direction, signal.symbol, trend_reason,
             )
+
+        # Past all guards - about to trade. Remember this message so a later
+        # edit of it can't open a second position.
+        if message_id is not None:
+            self._mark_traded(message_id)
 
         state = {"order_attempted": False}
         for attempt in range(1, EXECUTE_ATTEMPTS + 1):
@@ -542,6 +578,18 @@ class TradingEngine:
         }
         self._cancelled = {
             fp: ts for fp, ts in self._cancelled.items() if now - ts < CANCEL_WINDOW
+        }
+
+    def _already_traded(self, message_id: int) -> bool:
+        rec = self._traded_message_ids.get(message_id)
+        return rec is not None and datetime.now(timezone.utc) - rec < CANCEL_WINDOW
+
+    def _mark_traded(self, message_id: int) -> None:
+        now = datetime.now(timezone.utc)
+        self._traded_message_ids[message_id] = now
+        self._traded_message_ids = {
+            mid: ts for mid, ts in self._traded_message_ids.items()
+            if now - ts < CANCEL_WINDOW
         }
 
     def _is_duplicate(self, signal: TradeSignal) -> bool:

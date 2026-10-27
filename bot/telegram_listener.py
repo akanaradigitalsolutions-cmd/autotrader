@@ -11,7 +11,7 @@ from bot.aio import externally_cancelled
 
 logger = logging.getLogger(__name__)
 
-MessageHandler = Callable[[str, Optional[int]], Awaitable[None]]
+MessageHandler = Callable[[str, Optional[int], Optional[int], bool], Awaitable[None]]
 CommandHandler = Callable[[str], Awaitable[str]]
 
 # The watchdog makes a real Telegram API call on a fixed interval. Telethon
@@ -113,16 +113,7 @@ class TelegramListener:
 
         @self._client.on(events.NewMessage(chats=self._channels))
         async def _handler(event) -> None:
-            text = event.raw_text or ""
-            age = message_age_seconds(event.message.date)
-            if age > MAX_MESSAGE_AGE_SECONDS:
-                logger.warning(
-                    "Dropping message from %s delivered %.0fs late (limit %ds): %.60s",
-                    event.chat_id, age, MAX_MESSAGE_AGE_SECONDS, text,
-                )
-                return
-            logger.debug("Received message from %s: %s", event.chat_id, text)
-            await on_message(text, event.chat_id)
+            await self._dispatch_message(event, on_message, is_edit=False)
 
         if on_command is not None:
             # Commands are only accepted in Saved Messages ("me") - the chat
@@ -149,6 +140,14 @@ class TelegramListener:
                     reply = "Something went wrong handling that command - check the bot logs."
                 await event.respond(reply)
 
+        # Channels edit signals in place - commonly to FIX a malformed one
+        # (wrong SL/TP) seconds after posting. Re-dispatch edits so the
+        # corrected version gets a chance to trade; the engine guards against
+        # re-trading a message it already acted on.
+        @self._client.on(events.MessageEdited(chats=self._channels))
+        async def _edit_handler(event) -> None:
+            await self._dispatch_message(event, on_message, is_edit=True)
+
         watchdog = asyncio.create_task(self._watchdog())
         # Backstop: if the watchdog itself ever dies of an unexpected
         # exception, the bot would be left unguarded - force a restart
@@ -162,6 +161,23 @@ class TelegramListener:
             # probe completes at the same instant, and shutdown must never
             # be able to hang on that race.
             await asyncio.wait({watchdog}, timeout=5)
+
+    async def _dispatch_message(self, event, on_message, is_edit: bool) -> None:
+        text = event.raw_text or ""
+        # An edited message keeps its original .date, so age it by .edit_date
+        # instead - otherwise a fix made minutes after the post looks "stale"
+        # and gets dropped.
+        stamp = (getattr(event.message, "edit_date", None) if is_edit else None) or event.message.date
+        age = message_age_seconds(stamp)
+        kind = "edit" if is_edit else "message"
+        if age > MAX_MESSAGE_AGE_SECONDS:
+            logger.warning(
+                "Dropping %s from %s delivered %.0fs late (limit %ds): %.60s",
+                kind, event.chat_id, age, MAX_MESSAGE_AGE_SECONDS, text,
+            )
+            return
+        logger.debug("Received %s from %s: %s", kind, event.chat_id, text)
+        await on_message(text, event.chat_id, event.message.id, is_edit)
 
     async def _watchdog(self) -> None:
         failures = 0

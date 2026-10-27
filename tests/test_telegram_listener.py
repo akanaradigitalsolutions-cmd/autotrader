@@ -22,12 +22,18 @@ except ImportError:
             self.chats = chats
             self.pattern = pattern
 
+    class _MessageEdited:
+        def __init__(self, chats=None, pattern=None):
+            self.chats = chats
+            self.pattern = pattern
+
     class FloodWaitError(Exception):
         def __init__(self, seconds=0):
             self.seconds = seconds
             super().__init__(f"A wait of {seconds} seconds is required")
 
     events_stub.NewMessage = _NewMessage
+    events_stub.MessageEdited = _MessageEdited
     errors_stub.FloodWaitError = FloodWaitError
     telethon_stub.events = events_stub
     telethon_stub.errors = errors_stub
@@ -74,10 +80,12 @@ class FakeTelegramClient:
 
 
 class FakeEvent:
-    def __init__(self, text, date=None, chat_id=-1001):
+    def __init__(self, text, date=None, chat_id=-1001, msg_id=1, edit_date=None):
         self.raw_text = text
         self.chat_id = chat_id
-        self.message = types.SimpleNamespace(date=date or datetime.now(timezone.utc))
+        self.message = types.SimpleNamespace(
+            date=date or datetime.now(timezone.utc), id=msg_id, edit_date=edit_date
+        )
         self.replies = []
 
     async def respond(self, reply):
@@ -103,27 +111,53 @@ async def test_fresh_message_is_handled_but_stale_is_dropped(monkeypatch):
     listener = make_listener(monkeypatch)
     received = []
 
-    async def on_message(text, source=None):
-        received.append(text)
+    async def on_message(text, source=None, message_id=None, is_edit=False):
+        received.append((text, message_id, is_edit))
 
     await listener.start(on_message)
     message_handler = listener._client.handlers[0][1]
 
-    await message_handler(FakeEvent("GOLD BUY 4000"))
-    assert received == ["GOLD BUY 4000"]
+    await message_handler(FakeEvent("GOLD BUY 4000", msg_id=7))
+    assert received == [("GOLD BUY 4000", 7, False)]
 
     stale_date = datetime.now(timezone.utc) - timedelta(
         seconds=tl.MAX_MESSAGE_AGE_SECONDS + 60
     )
     await message_handler(FakeEvent("GOLD SELL 4100", date=stale_date))
-    assert received == ["GOLD BUY 4000"]  # stale signal must never be traded
+    assert len(received) == 1  # stale signal must never be traded
+
+
+@pytest.mark.asyncio
+async def test_edited_message_is_dispatched_with_is_edit_flag(monkeypatch):
+    listener = make_listener(monkeypatch)
+    received = []
+
+    async def on_message(text, source=None, message_id=None, is_edit=False):
+        received.append((text, message_id, is_edit))
+
+    await listener.start(on_message)
+    # Handlers: [0]=NewMessage, [1]=MessageEdited (no command handler here).
+    edit_handler = listener._client.handlers[1][1]
+
+    # Edited message keeps its original (old) date but a fresh edit_date -
+    # it must NOT be dropped as stale.
+    old_date = datetime.now(timezone.utc) - timedelta(
+        seconds=tl.MAX_MESSAGE_AGE_SECONDS + 300
+    )
+    fresh_edit = datetime.now(timezone.utc)
+    await edit_handler(
+        FakeEvent("gold sell 4006 sl 4016 tp 3996", date=old_date,
+                  edit_date=fresh_edit, msg_id=42)
+    )
+
+    assert received == [("gold sell 4006 sl 4016 tp 3996", 42, True)]
 
 
 @pytest.mark.asyncio
 async def test_command_failure_still_sends_a_reply(monkeypatch):
     listener = make_listener(monkeypatch)
 
-    async def on_message(text, source=None):
+    async def on_message(text, source=None, message_id=None, is_edit=False):
         pass
 
     async def on_command(text):
