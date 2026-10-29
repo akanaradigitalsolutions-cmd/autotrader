@@ -156,6 +156,12 @@ class TradingEngine:
         setattr(self.settings, attr, value)
         if attr == "daily_loss_limit_percent":
             self._daily_loss.limit_percent = value
+        elif attr in ("trailing_activate_pips", "trailing_distance_pips"):
+            if self.position_monitor is not None:
+                self.position_monitor.set_trailing(
+                    self.settings.trailing_activate_pips,
+                    self.settings.trailing_distance_pips,
+                )
 
     async def handle_message(
         self,

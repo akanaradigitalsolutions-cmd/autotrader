@@ -956,3 +956,20 @@ async def test_sim_only_rr_filter_allows_high_enough_rr():
     await engine.handle_message(SELL_SIGNAL, source=-100)
 
     assert len(sim.added) == 1         # 0.71 >= 0.5 -> paper-traded
+
+
+@pytest.mark.asyncio
+async def test_apply_setting_updates_live_trailing_monitor():
+    broker = FakeBroker(bid=4316, ask=4316.2)
+    monitor = PositionMonitor(
+        broker, trailing_activate_pips=60, trailing_distance_pips=10, pip_size=0.1
+    )
+    engine = TradingEngine(
+        make_settings(), SignalParser(), broker, position_monitor=monitor
+    )
+
+    engine.apply_setting("trailing_activate_pips", 80)
+    engine.apply_setting("trailing_distance_pips", 20)
+
+    assert monitor._activate == 80 * 0.1  # live monitor picked up the change
+    assert monitor._distance == 20 * 0.1

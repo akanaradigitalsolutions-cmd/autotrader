@@ -12,14 +12,21 @@ from bot.status import build_status_report
 
 logger = logging.getLogger(__name__)
 
-SET_PATTERN = re.compile(
-    r"^/set\s+(lot|trades|daily_loss)\s+(\S+)\s*$", re.IGNORECASE
-)
+SET_PATTERN = re.compile(r"^/set\s+(\w+)\s+(.+?)\s*$", re.IGNORECASE)
 PAUSE_PATTERN = re.compile(r"^/pause(?:\s+(.+))?$", re.IGNORECASE)
 # Duration tokens like "1d", "4h", "30m" (any mix, e.g. "1d6h").
 DURATION_TOKEN = re.compile(r"(\d+)\s*([dhm])", re.IGNORECASE)
 CONFIRM_WORDS = {"yes", "y", "/confirm"}
 CANCEL_WORDS = {"no", "n", "/cancel"}
+
+SET_USAGE = (
+    "Usage:\n"
+    "/set lot <value>\n"
+    "/set trades <value>\n"
+    "/set max_positions <value>\n"
+    "/set daily_loss <percent>  (0 disables)\n"
+    "/set trail <activate_pips> <distance_pips>  (or /set trail off)"
+)
 
 USAGE = (
     "Unknown command. Available:\n"
@@ -27,10 +34,7 @@ USAGE = (
     "/report\n"
     "/simreport\n"
     "/pause [duration]  (e.g. /pause 1d, /pause 4h; no arg = until /resume)\n"
-    "/resume\n"
-    "/set lot <value>\n"
-    "/set trades <value>\n"
-    "/set daily_loss <percent>  (0 disables)"
+    "/resume\n" + SET_USAGE
 )
 
 
@@ -62,11 +66,19 @@ def parse_duration(arg: str) -> Optional[timedelta]:
 
 
 @dataclass
-class PendingChange:
-    attr: str  # Settings attribute name, e.g. "lot_size"
+class _Edit:
+    attr: str  # Settings attribute, e.g. "lot_size"
     env_key: str  # .env key, e.g. "LOT_SIZE"
     old_value: Union[float, int]
     new_value: Union[float, int]
+
+
+@dataclass
+class PendingChange:
+    edits: list  # list[_Edit] - usually one, two for /set trail
+    label: str  # human label for the messages, e.g. "LOT_SIZE" or "TRAIL"
+    old_desc: str
+    new_desc: str
 
 
 class CommandHandler:
@@ -107,7 +119,7 @@ class CommandHandler:
             if lower in CANCEL_WORDS:
                 pending = self._pending
                 self._pending = None
-                return f"Cancelled. {pending.env_key} stays at {pending.old_value}."
+                return f"Cancelled. {pending.label} stays at {pending.old_desc}."
             # A new command overrides an unanswered confirmation instead of
             # getting stuck waiting for a yes/no forever.
             self._pending = None
@@ -137,11 +149,8 @@ class CommandHandler:
         if lower.startswith("/set"):
             match = SET_PATTERN.match(stripped)
             if not match:
-                return (
-                    "Usage: /set lot <value> | /set trades <value> | "
-                    "/set daily_loss <percent>"
-                )
-            return self._propose_change(match.group(1).lower(), match.group(2))
+                return SET_USAGE
+            return self._propose_change(match.group(1), match.group(2))
 
         return USAGE
 
@@ -168,58 +177,111 @@ class CommandHandler:
             "Send /resume to restart early."
         )
 
-    def _propose_change(self, field: str, raw_value: str) -> str:
+    def _propose_change(self, field: str, args: str) -> str:
+        field = field.lower()
+        if field == "trail":
+            return self._propose_trail(args)
+
         try:
-            value = float(raw_value)
+            value = float(args.strip())
         except ValueError:
-            return f"Invalid number: {raw_value}"
+            return f"Invalid number: {args}"
 
         if field == "lot":
             if value <= 0 or value > self.settings.max_lot_size:
                 return f"Lot size must be > 0 and <= MAX_LOT_SIZE ({self.settings.max_lot_size})."
-            old_value = self.settings.lot_size
-            self._pending = PendingChange("lot_size", "LOT_SIZE", old_value, value)
-            return f"Change LOT_SIZE from {old_value} to {value}?\nReply YES to confirm, NO to cancel."
+            old = self.settings.lot_size
+            self._pending = PendingChange(
+                [_Edit("lot_size", "LOT_SIZE", old, value)], "LOT_SIZE", str(old), str(value)
+            )
+            return f"Change LOT_SIZE from {old} to {value}?\nReply YES to confirm, NO to cancel."
 
         if field == "trades":
             if value <= 0 or not value.is_integer() or value > 10:
                 return "Trades/signal must be a whole number between 1 and 10."
-            new_value = int(value)
-            old_value = self.settings.trades_per_signal
+            new = int(value)
+            old = self.settings.trades_per_signal
             self._pending = PendingChange(
-                "trades_per_signal", "TRADES_PER_SIGNAL", old_value, new_value
+                [_Edit("trades_per_signal", "TRADES_PER_SIGNAL", old, new)],
+                "TRADES_PER_SIGNAL", str(old), str(new),
             )
             return (
-                f"Change TRADES_PER_SIGNAL from {old_value} to {new_value}?\n"
+                f"Change TRADES_PER_SIGNAL from {old} to {new}?\n"
                 "Reply YES to confirm, NO to cancel."
             )
 
-        # daily_loss (percent; 0 disables the circuit breaker)
-        if value < 0 or value > 100:
-            return "Daily loss limit must be a percent between 0 and 100 (0 disables)."
-        old_value = self.settings.daily_loss_limit_percent
+        if field in ("max_positions", "max", "max_open", "maxpos"):
+            if value <= 0 or not value.is_integer() or value > 50:
+                return "Max open positions must be a whole number between 1 and 50."
+            new = int(value)
+            old = self.settings.max_open_positions
+            self._pending = PendingChange(
+                [_Edit("max_open_positions", "MAX_OPEN_POSITIONS", old, new)],
+                "MAX_OPEN_POSITIONS", str(old), str(new),
+            )
+            return (
+                f"Change MAX_OPEN_POSITIONS from {old} to {new}?\n"
+                "Reply YES to confirm, NO to cancel."
+            )
+
+        if field == "daily_loss":
+            if value < 0 or value > 100:
+                return "Daily loss limit must be a percent between 0 and 100 (0 disables)."
+            old = self.settings.daily_loss_limit_percent
+            self._pending = PendingChange(
+                [_Edit("daily_loss_limit_percent", "DAILY_LOSS_LIMIT_PERCENT", old, value)],
+                "DAILY_LOSS_LIMIT_PERCENT", str(old), str(value),
+            )
+            return (
+                f"Change DAILY_LOSS_LIMIT_PERCENT from {old} to {value}?\n"
+                "Reply YES to confirm, NO to cancel."
+            )
+
+        return "Unknown setting. " + SET_USAGE
+
+    def _propose_trail(self, args: str) -> str:
+        parts = args.split()
+        if len(parts) == 1 and parts[0].lower() in ("off", "0"):
+            activate = distance = 0.0
+        elif len(parts) == 2:
+            try:
+                activate, distance = float(parts[0]), float(parts[1])
+            except ValueError:
+                return "Trail needs two numbers: /set trail <activate_pips> <distance_pips>  (or /set trail off)."
+            if activate <= 0 or distance <= 0:
+                return "Both trail values must be > 0, or use /set trail off to disable."
+        else:
+            return "Usage: /set trail <activate_pips> <distance_pips>  (e.g. /set trail 60 10, or /set trail off)."
+
+        old_act = self.settings.trailing_activate_pips
+        old_dist = self.settings.trailing_distance_pips
+        old_desc = f"{old_act:.0f}/{old_dist:.0f}p" if old_act > 0 and old_dist > 0 else "off"
+        new_desc = f"{activate:.0f}/{distance:.0f}p" if activate > 0 and distance > 0 else "off"
         self._pending = PendingChange(
-            "daily_loss_limit_percent", "DAILY_LOSS_LIMIT_PERCENT", old_value, value
+            [
+                _Edit("trailing_activate_pips", "TRAILING_ACTIVATE_PIPS", old_act, activate),
+                _Edit("trailing_distance_pips", "TRAILING_DISTANCE_PIPS", old_dist, distance),
+            ],
+            "TRAIL", old_desc, new_desc,
         )
         return (
-            f"Change DAILY_LOSS_LIMIT_PERCENT from {old_value} to {value}?\n"
+            f"Change TRAIL (activate/distance) from {old_desc} to {new_desc}?\n"
             "Reply YES to confirm, NO to cancel."
         )
 
     def _apply_pending(self) -> str:
         pending = self._pending
         self._pending = None
-        # Route through the engine so dependent guards (e.g. the daily-loss
-        # circuit breaker) pick up the change immediately, not just settings.
-        self.engine.apply_setting(pending.attr, pending.new_value)
-        self._persist_to_env(pending.env_key, pending.new_value)
-        logger.warning(
-            "Config changed via Telegram: %s %s -> %s",
-            pending.attr,
-            pending.old_value,
-            pending.new_value,
-        )
-        return f"Done. {pending.env_key} is now {pending.new_value} (saved to .env)."
+        # Route through the engine so dependent guards (daily-loss circuit
+        # breaker, trailing monitor) pick up the change immediately.
+        for edit in pending.edits:
+            self.engine.apply_setting(edit.attr, edit.new_value)
+            self._persist_to_env(edit.env_key, edit.new_value)
+            logger.warning(
+                "Config changed via Telegram: %s %s -> %s",
+                edit.attr, edit.old_value, edit.new_value,
+            )
+        return f"Done. {pending.label} is now {pending.new_desc} (saved to .env)."
 
     def _persist_to_env(self, key: str, value: Union[float, int]) -> None:
         lines = self.env_path.read_text().splitlines() if self.env_path.exists() else []

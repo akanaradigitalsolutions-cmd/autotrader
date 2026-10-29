@@ -158,3 +158,69 @@ async def test_unrelated_message_does_not_consume_pending_confirmation_silently(
     reply = await handler.handle("/status")
 
     assert "Lot size: 0.01" in reply  # unchanged - confirmation was abandoned, not applied
+
+
+@pytest.mark.asyncio
+async def test_set_max_positions(tmp_path):
+    handler = make_handler(tmp_path, max_open_positions=6)
+
+    proposal = await handler.handle("/set max_positions 4")
+    assert "6 to 4" in proposal
+    assert handler.settings.max_open_positions == 6  # not yet applied
+
+    confirmation = await handler.handle("yes")
+    assert handler.settings.max_open_positions == 4
+    assert "MAX_OPEN_POSITIONS=4" in handler.env_path.read_text()
+
+
+@pytest.mark.asyncio
+async def test_set_max_positions_rejects_non_integer(tmp_path):
+    handler = make_handler(tmp_path)
+    reply = await handler.handle("/set max_positions 2.5")
+    assert "whole number" in reply
+
+
+@pytest.mark.asyncio
+async def test_set_trail_changes_both_values_and_live_monitor(tmp_path):
+    handler = make_handler(
+        tmp_path, trailing_activate_pips=60, trailing_distance_pips=10
+    )
+
+    proposal = await handler.handle("/set trail 80 20")
+    assert "60/10p to 80/20p" in proposal
+    assert handler.settings.trailing_activate_pips == 60  # not yet applied
+
+    confirmation = await handler.handle("yes")
+    assert handler.settings.trailing_activate_pips == 80
+    assert handler.settings.trailing_distance_pips == 20
+    text = handler.env_path.read_text()
+    assert "TRAILING_ACTIVATE_PIPS=80" in text
+    assert "TRAILING_DISTANCE_PIPS=20" in text
+
+
+@pytest.mark.asyncio
+async def test_set_trail_off(tmp_path):
+    handler = make_handler(
+        tmp_path, trailing_activate_pips=60, trailing_distance_pips=10
+    )
+
+    await handler.handle("/set trail off")
+    confirmation = await handler.handle("yes")
+
+    assert handler.settings.trailing_activate_pips == 0
+    assert handler.settings.trailing_distance_pips == 0
+    assert "off" in confirmation
+
+
+@pytest.mark.asyncio
+async def test_set_trail_rejects_single_value(tmp_path):
+    handler = make_handler(tmp_path)
+    reply = await handler.handle("/set trail 60")
+    assert "two" in reply.lower() or "Usage" in reply
+
+
+@pytest.mark.asyncio
+async def test_set_unknown_setting(tmp_path):
+    handler = make_handler(tmp_path)
+    reply = await handler.handle("/set banana 5")
+    assert "Unknown setting" in reply

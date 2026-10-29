@@ -56,6 +56,7 @@ class PositionMonitor:
         self._journal = journal
         self._activate = trailing_activate_pips * pip_size
         self._distance = trailing_distance_pips * pip_size
+        self._pip_size = pip_size
         self._pending_expiry = pending_expiry_minutes
         self._managed: list[ManagedTrade] = []
         # position id -> symbol, for every bot position (close detection +
@@ -70,6 +71,11 @@ class PositionMonitor:
     def track_for_journal(self, position_id: str, symbol: str) -> None:
         if position_id:
             self._tracked[position_id] = symbol
+
+    def set_trailing(self, activate_pips: float, distance_pips: float) -> None:
+        """Update the trailing-stop thresholds live (from a Telegram /set)."""
+        self._activate = activate_pips * self._pip_size
+        self._distance = distance_pips * self._pip_size
 
     def track_pending(self, order_id: str, symbol: str) -> None:
         if order_id:
