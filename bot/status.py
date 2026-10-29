@@ -47,7 +47,8 @@ async def build_status_report(
     guards = (
         f"conflict={'on' if settings.prevent_opposite_positions else 'off'} "
         f"breakeven={'on' if settings.breakeven_after_tp1 else 'off'} "
-        f"daily_loss={daily_loss} trail={trailing}"
+        f"daily_loss={daily_loss} trail={trailing} "
+        f"reentry={'on' if settings.reenter_after_close else 'off'}"
     )
     rr_filter = (
         f"skip R:R<{settings.skip_reward_risk_below:.1f}"

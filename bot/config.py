@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     # signal with identical levels seen again within this window is not
     # traded twice. 0 disables the guard.
     duplicate_signal_window_minutes: int = 120
+    # When a repost of the same levels arrives inside the duplicate window but
+    # the earlier trade for them has already CLOSED, treat it as a fresh
+    # opportunity and take it (same channel only), instead of dropping it as a
+    # duplicate. false = strict dedup (never re-enter within the window).
+    reenter_after_close: bool = True
     # Conflict guard: never hold a BUY and a SELL on the same symbol at once
     # (following several channels, they contradict each other and you get
     # stopped out both ways). Skips a signal opposite to what's already open.

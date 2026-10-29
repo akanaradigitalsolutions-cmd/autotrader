@@ -138,16 +138,52 @@ async def test_buy_signal_waits_as_pending_order_when_price_above_zone():
 
 
 @pytest.mark.asyncio
-async def test_reposted_signal_is_not_traded_twice():
+async def test_reposted_signal_is_not_traded_twice_while_still_open():
     broker = FakeBroker(bid=4316, ask=4316.2)
     engine = TradingEngine(make_settings(), SignalParser(), broker)
 
     await engine.handle_message(SELL_SIGNAL)
     first_count = len(broker.placed_orders)
-    await engine.handle_message(SELL_SIGNAL)  # channel reposts the signal
-
     assert first_count == 3
+    # Those positions are still open at the broker.
+    broker.positions = [
+        OpenPosition(id=str(i), symbol="XAUUSD", direction=Direction.SELL,
+                     volume=0.01, open_price=4316.0)
+        for i in range(1, first_count + 1)
+    ]
+
+    await engine.handle_message(SELL_SIGNAL)  # channel reposts while still open
+
     assert len(broker.placed_orders) == first_count  # no duplicate trades
+
+
+@pytest.mark.asyncio
+async def test_reposted_signal_reenters_after_prior_trade_closed():
+    broker = FakeBroker(bid=4316, ask=4316.2)
+    engine = TradingEngine(make_settings(), SignalParser(), broker)
+
+    await engine.handle_message(SELL_SIGNAL, source=-1)
+    assert len(broker.placed_orders) == 3
+    broker.positions = []  # prior trade has CLOSED (hit TP or SL)
+
+    await engine.handle_message(SELL_SIGNAL, source=-1)  # same levels, reposted
+
+    assert len(broker.placed_orders) == 6  # fresh opportunity - re-entered
+
+
+@pytest.mark.asyncio
+async def test_no_reentry_when_disabled():
+    broker = FakeBroker(bid=4316, ask=4316.2)
+    engine = TradingEngine(
+        make_settings(reenter_after_close=False), SignalParser(), broker
+    )
+
+    await engine.handle_message(SELL_SIGNAL, source=-1)
+    broker.positions = []  # even though it closed...
+
+    await engine.handle_message(SELL_SIGNAL, source=-1)
+
+    assert len(broker.placed_orders) == 3  # strict dedup - no re-entry
 
 
 @pytest.mark.asyncio
