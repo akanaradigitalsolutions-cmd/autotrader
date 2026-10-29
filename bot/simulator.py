@@ -56,6 +56,11 @@ class SignalSimulator:
         self._open: list[SimTrade] = []
         self._counter = 0
 
+    def set_trailing(self, activate_pips: float, distance_pips: float) -> None:
+        """Update the sim trailing-stop thresholds live (from a Telegram /set)."""
+        self._trail_activate = activate_pips
+        self._trail_distance = distance_pips
+
     def add(self, source, symbol, direction, entry, stop_loss, take_profit, reason) -> None:
         if entry is None or stop_loss is None or take_profit is None:
             return

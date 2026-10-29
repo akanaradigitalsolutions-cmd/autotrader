@@ -20,22 +20,67 @@ CONFIRM_WORDS = {"yes", "y", "/confirm"}
 CANCEL_WORDS = {"no", "n", "/cancel"}
 
 SET_USAGE = (
-    "Usage:\n"
-    "/set lot <value>\n"
-    "/set trades <value>\n"
-    "/set max_positions <value>\n"
-    "/set daily_loss <percent>  (0 disables)\n"
-    "/set trail <activate_pips> <distance_pips>  (or /set trail off)"
+    "/set <setting> <value> — asks YES/NO, saves to .env:\n"
+    "Risk:   lot 0.02 | trades 2 | max_positions 6 | daily_loss 10\n"
+    "Filter: skip_rr 1.0 | min_rr 1.0 | trend off|shadow|on | dup_window 120\n"
+    "Entry:  immediate_entry on|off | now_guard 10 | fallback_sl 120 | pending_expiry 60\n"
+    "Trail:  trail 60 10  (or trail off)\n"
+    "Guards: conflict on|off | breakeven on|off | reentry on|off | require_sl on|off | cancellations on|off\n"
+    "Sim:    sim_skip_rr 1.0 | sim_trail 60 10  (or sim_trail off)"
 )
 
 USAGE = (
-    "Unknown command. Available:\n"
-    "/status\n"
-    "/report\n"
-    "/simreport\n"
-    "/pause [duration]  (e.g. /pause 1d, /pause 4h; no arg = until /resume)\n"
-    "/resume\n" + SET_USAGE
+    "Commands:\n"
+    "/status   /report   /simreport\n"
+    "/pause [1d|4h|30m]   /resume\n" + SET_USAGE
 )
+
+TRUE_WORDS = {"on", "true", "1", "yes", "y", "enable", "enabled"}
+FALSE_WORDS = {"off", "false", "0", "no", "n", "disable", "disabled"}
+
+
+def parse_bool(s: str) -> Optional[bool]:
+    s = s.strip().lower()
+    if s in TRUE_WORDS:
+        return True
+    if s in FALSE_WORDS:
+        return False
+    return None
+
+
+@dataclass
+class _Spec:
+    attr: str  # Settings attribute
+    env_key: str  # .env key
+    kind: str  # 'float' | 'int' | 'percent' | 'bool' | 'enum'
+    minv: Optional[float] = None
+    maxv: Optional[float] = None
+    choices: tuple = ()
+
+
+# Single-value settings tunable from Telegram (lot/trail/sim_trail are handled
+# specially below). Credentials, channels, symbol, paths and the backend are
+# deliberately NOT here - they need a restart or would be unsafe to change live.
+SET_SPECS = {
+    "trades": _Spec("trades_per_signal", "TRADES_PER_SIGNAL", "int", 1, 10),
+    "max_positions": _Spec("max_open_positions", "MAX_OPEN_POSITIONS", "int", 1, 50),
+    "max": _Spec("max_open_positions", "MAX_OPEN_POSITIONS", "int", 1, 50),
+    "daily_loss": _Spec("daily_loss_limit_percent", "DAILY_LOSS_LIMIT_PERCENT", "percent", 0, 100),
+    "skip_rr": _Spec("skip_reward_risk_below", "SKIP_REWARD_RISK_BELOW", "float", 0, 100),
+    "min_rr": _Spec("min_reward_risk", "MIN_REWARD_RISK", "float", 0, 100),
+    "fallback_sl": _Spec("fallback_stop_loss_pips", "FALLBACK_STOP_LOSS_PIPS", "float", 0, 100000),
+    "now_guard": _Spec("market_entry_min_stop_pips", "MARKET_ENTRY_MIN_STOP_PIPS", "float", 0, 100000),
+    "pending_expiry": _Spec("pending_order_expiry_minutes", "PENDING_ORDER_EXPIRY_MINUTES", "int", 0, 100000),
+    "dup_window": _Spec("duplicate_signal_window_minutes", "DUPLICATE_SIGNAL_WINDOW_MINUTES", "int", 0, 100000),
+    "sim_skip_rr": _Spec("sim_skip_reward_risk_below", "SIM_SKIP_REWARD_RISK_BELOW", "float", 0, 100),
+    "conflict": _Spec("prevent_opposite_positions", "PREVENT_OPPOSITE_POSITIONS", "bool"),
+    "breakeven": _Spec("breakeven_after_tp1", "BREAKEVEN_AFTER_TP1", "bool"),
+    "reentry": _Spec("reenter_after_close", "REENTER_AFTER_CLOSE", "bool"),
+    "require_sl": _Spec("require_stop_loss", "REQUIRE_STOP_LOSS", "bool"),
+    "immediate_entry": _Spec("immediate_entry", "IMMEDIATE_ENTRY", "bool"),
+    "cancellations": _Spec("honor_cancellations", "HONOR_CANCELLATIONS", "bool"),
+    "trend": _Spec("trend_filter", "TREND_FILTER", "enum", choices=("off", "shadow", "on")),
+}
 
 
 def parse_duration(arg: str) -> Optional[timedelta]:
@@ -179,67 +224,73 @@ class CommandHandler:
 
     def _propose_change(self, field: str, args: str) -> str:
         field = field.lower()
+        if field == "lot":
+            return self._propose_lot(args)
         if field == "trail":
-            return self._propose_trail(args)
+            return self._propose_trail(args, sim=False)
+        if field == "sim_trail":
+            return self._propose_trail(args, sim=True)
 
+        spec = SET_SPECS.get(field)
+        if spec is None:
+            return "Unknown setting.\n" + SET_USAGE
+
+        old = getattr(self.settings, spec.attr)
+        if spec.kind == "bool":
+            new = parse_bool(args)
+            if new is None:
+                return f"Use on/off: /set {field} on   (or off)."
+            old_desc, new_desc = ("on" if old else "off"), ("on" if new else "off")
+        elif spec.kind == "enum":
+            new = args.strip().lower()
+            if new not in spec.choices:
+                return f"{spec.env_key} must be one of: {', '.join(spec.choices)}."
+            old_desc, new_desc = str(old), new
+        else:  # float / int / percent
+            try:
+                value = float(args.strip())
+            except ValueError:
+                return f"Invalid number: {args}"
+            if spec.kind == "int" and not value.is_integer():
+                return f"{spec.env_key} must be a whole number between {int(spec.minv)} and {int(spec.maxv)}."
+            if spec.kind == "percent" and (value < 0 or value > 100):
+                return f"{spec.env_key} must be between 0 and 100 (0 disables)."
+            if spec.minv is not None and value < spec.minv:
+                return f"{spec.env_key} must be >= {spec.minv}."
+            if spec.maxv is not None and value > spec.maxv:
+                return f"{spec.env_key} must be <= {spec.maxv}."
+            new = int(value) if spec.kind == "int" else value
+            old_desc, new_desc = str(old), str(new)
+
+        self._pending = PendingChange(
+            [_Edit(spec.attr, spec.env_key, old, new)], spec.env_key, old_desc, new_desc
+        )
+        return (
+            f"Change {spec.env_key} from {old_desc} to {new_desc}?\n"
+            "Reply YES to confirm, NO to cancel."
+        )
+
+    def _propose_lot(self, args: str) -> str:
         try:
             value = float(args.strip())
         except ValueError:
             return f"Invalid number: {args}"
+        if value <= 0 or value > self.settings.max_lot_size:
+            return f"Lot size must be > 0 and <= MAX_LOT_SIZE ({self.settings.max_lot_size})."
+        old = self.settings.lot_size
+        self._pending = PendingChange(
+            [_Edit("lot_size", "LOT_SIZE", old, value)], "LOT_SIZE", str(old), str(value)
+        )
+        return f"Change LOT_SIZE from {old} to {value}?\nReply YES to confirm, NO to cancel."
 
-        if field == "lot":
-            if value <= 0 or value > self.settings.max_lot_size:
-                return f"Lot size must be > 0 and <= MAX_LOT_SIZE ({self.settings.max_lot_size})."
-            old = self.settings.lot_size
-            self._pending = PendingChange(
-                [_Edit("lot_size", "LOT_SIZE", old, value)], "LOT_SIZE", str(old), str(value)
-            )
-            return f"Change LOT_SIZE from {old} to {value}?\nReply YES to confirm, NO to cancel."
+    def _propose_trail(self, args: str, sim: bool = False) -> str:
+        name = "sim_trail" if sim else "trail"
+        label = "SIM_TRAIL" if sim else "TRAIL"
+        act_attr = "sim_trailing_activate_pips" if sim else "trailing_activate_pips"
+        dist_attr = "sim_trailing_distance_pips" if sim else "trailing_distance_pips"
+        act_key = ("SIM_" if sim else "") + "TRAILING_ACTIVATE_PIPS"
+        dist_key = ("SIM_" if sim else "") + "TRAILING_DISTANCE_PIPS"
 
-        if field == "trades":
-            if value <= 0 or not value.is_integer() or value > 10:
-                return "Trades/signal must be a whole number between 1 and 10."
-            new = int(value)
-            old = self.settings.trades_per_signal
-            self._pending = PendingChange(
-                [_Edit("trades_per_signal", "TRADES_PER_SIGNAL", old, new)],
-                "TRADES_PER_SIGNAL", str(old), str(new),
-            )
-            return (
-                f"Change TRADES_PER_SIGNAL from {old} to {new}?\n"
-                "Reply YES to confirm, NO to cancel."
-            )
-
-        if field in ("max_positions", "max", "max_open", "maxpos"):
-            if value <= 0 or not value.is_integer() or value > 50:
-                return "Max open positions must be a whole number between 1 and 50."
-            new = int(value)
-            old = self.settings.max_open_positions
-            self._pending = PendingChange(
-                [_Edit("max_open_positions", "MAX_OPEN_POSITIONS", old, new)],
-                "MAX_OPEN_POSITIONS", str(old), str(new),
-            )
-            return (
-                f"Change MAX_OPEN_POSITIONS from {old} to {new}?\n"
-                "Reply YES to confirm, NO to cancel."
-            )
-
-        if field == "daily_loss":
-            if value < 0 or value > 100:
-                return "Daily loss limit must be a percent between 0 and 100 (0 disables)."
-            old = self.settings.daily_loss_limit_percent
-            self._pending = PendingChange(
-                [_Edit("daily_loss_limit_percent", "DAILY_LOSS_LIMIT_PERCENT", old, value)],
-                "DAILY_LOSS_LIMIT_PERCENT", str(old), str(value),
-            )
-            return (
-                f"Change DAILY_LOSS_LIMIT_PERCENT from {old} to {value}?\n"
-                "Reply YES to confirm, NO to cancel."
-            )
-
-        return "Unknown setting. " + SET_USAGE
-
-    def _propose_trail(self, args: str) -> str:
         parts = args.split()
         if len(parts) == 1 and parts[0].lower() in ("off", "0"):
             activate = distance = 0.0
@@ -247,25 +298,25 @@ class CommandHandler:
             try:
                 activate, distance = float(parts[0]), float(parts[1])
             except ValueError:
-                return "Trail needs two numbers: /set trail <activate_pips> <distance_pips>  (or /set trail off)."
+                return f"{name} needs two numbers: /set {name} <activate_pips> <distance_pips>  (or /set {name} off)."
             if activate <= 0 or distance <= 0:
-                return "Both trail values must be > 0, or use /set trail off to disable."
+                return f"Both values must be > 0, or use /set {name} off to disable."
         else:
-            return "Usage: /set trail <activate_pips> <distance_pips>  (e.g. /set trail 60 10, or /set trail off)."
+            return f"Usage: /set {name} <activate_pips> <distance_pips>  (e.g. /set {name} 60 10, or /set {name} off)."
 
-        old_act = self.settings.trailing_activate_pips
-        old_dist = self.settings.trailing_distance_pips
+        old_act = getattr(self.settings, act_attr)
+        old_dist = getattr(self.settings, dist_attr)
         old_desc = f"{old_act:.0f}/{old_dist:.0f}p" if old_act > 0 and old_dist > 0 else "off"
         new_desc = f"{activate:.0f}/{distance:.0f}p" if activate > 0 and distance > 0 else "off"
         self._pending = PendingChange(
             [
-                _Edit("trailing_activate_pips", "TRAILING_ACTIVATE_PIPS", old_act, activate),
-                _Edit("trailing_distance_pips", "TRAILING_DISTANCE_PIPS", old_dist, distance),
+                _Edit(act_attr, act_key, old_act, activate),
+                _Edit(dist_attr, dist_key, old_dist, distance),
             ],
-            "TRAIL", old_desc, new_desc,
+            label, old_desc, new_desc,
         )
         return (
-            f"Change TRAIL (activate/distance) from {old_desc} to {new_desc}?\n"
+            f"Change {label} (activate/distance) from {old_desc} to {new_desc}?\n"
             "Reply YES to confirm, NO to cancel."
         )
 
@@ -283,7 +334,10 @@ class CommandHandler:
             )
         return f"Done. {pending.label} is now {pending.new_desc} (saved to .env)."
 
-    def _persist_to_env(self, key: str, value: Union[float, int]) -> None:
+    def _persist_to_env(self, key: str, value) -> None:
+        # Write booleans as lowercase true/false so pydantic re-reads them.
+        if isinstance(value, bool):
+            value = "true" if value else "false"
         lines = self.env_path.read_text().splitlines() if self.env_path.exists() else []
         pattern = re.compile(rf"^{re.escape(key)}\s*=")
         new_line = f"{key}={value}"

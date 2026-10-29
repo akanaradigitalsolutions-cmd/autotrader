@@ -77,6 +77,10 @@ class PositionMonitor:
         self._activate = activate_pips * self._pip_size
         self._distance = distance_pips * self._pip_size
 
+    def set_pending_expiry(self, minutes: int) -> None:
+        """Update the pending-order expiry live (from a Telegram /set)."""
+        self._pending_expiry = minutes
+
     def track_pending(self, order_id: str, symbol: str) -> None:
         if order_id:
             self._pending[order_id] = (symbol, time.time())

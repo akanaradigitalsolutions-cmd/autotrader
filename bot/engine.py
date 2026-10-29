@@ -162,6 +162,15 @@ class TradingEngine:
                     self.settings.trailing_activate_pips,
                     self.settings.trailing_distance_pips,
                 )
+        elif attr == "pending_order_expiry_minutes":
+            if self.position_monitor is not None:
+                self.position_monitor.set_pending_expiry(value)
+        elif attr in ("sim_trailing_activate_pips", "sim_trailing_distance_pips"):
+            if self.simulator is not None:
+                self.simulator.set_trailing(
+                    self.settings.sim_trailing_activate_pips,
+                    self.settings.sim_trailing_distance_pips,
+                )
 
     async def handle_message(
         self,

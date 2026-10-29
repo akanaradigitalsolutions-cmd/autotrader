@@ -224,3 +224,78 @@ async def test_set_unknown_setting(tmp_path):
     handler = make_handler(tmp_path)
     reply = await handler.handle("/set banana 5")
     assert "Unknown setting" in reply
+
+
+@pytest.mark.asyncio
+async def test_set_bool_toggle_conflict(tmp_path):
+    handler = make_handler(tmp_path, prevent_opposite_positions=True)
+
+    proposal = await handler.handle("/set conflict off")
+    assert "on to off" in proposal
+    await handler.handle("yes")
+
+    assert handler.settings.prevent_opposite_positions is False
+    assert "PREVENT_OPPOSITE_POSITIONS=false" in handler.env_path.read_text()
+
+
+@pytest.mark.asyncio
+async def test_set_bool_rejects_garbage(tmp_path):
+    handler = make_handler(tmp_path)
+    reply = await handler.handle("/set breakeven maybe")
+    assert "on/off" in reply
+
+
+@pytest.mark.asyncio
+async def test_set_enum_trend(tmp_path):
+    handler = make_handler(tmp_path, trend_filter="off")
+
+    await handler.handle("/set trend shadow")
+    await handler.handle("yes")
+
+    assert handler.settings.trend_filter == "shadow"
+    assert "TREND_FILTER=shadow" in handler.env_path.read_text()
+
+
+@pytest.mark.asyncio
+async def test_set_enum_rejects_bad_choice(tmp_path):
+    handler = make_handler(tmp_path)
+    reply = await handler.handle("/set trend sometimes")
+    assert "off, shadow, on" in reply
+
+
+@pytest.mark.asyncio
+async def test_set_skip_rr_float(tmp_path):
+    handler = make_handler(tmp_path, skip_reward_risk_below=0.0)
+
+    await handler.handle("/set skip_rr 1.5")
+    await handler.handle("yes")
+
+    assert handler.settings.skip_reward_risk_below == 1.5
+    assert "SKIP_REWARD_RISK_BELOW=1.5" in handler.env_path.read_text()
+
+
+@pytest.mark.asyncio
+async def test_set_pending_expiry_int(tmp_path):
+    handler = make_handler(tmp_path, pending_order_expiry_minutes=60)
+
+    await handler.handle("/set pending_expiry 30")
+    await handler.handle("yes")
+
+    assert handler.settings.pending_order_expiry_minutes == 30
+    assert "PENDING_ORDER_EXPIRY_MINUTES=30" in handler.env_path.read_text()
+
+
+@pytest.mark.asyncio
+async def test_set_sim_trail(tmp_path):
+    handler = make_handler(
+        tmp_path, sim_trailing_activate_pips=0, sim_trailing_distance_pips=0
+    )
+
+    await handler.handle("/set sim_trail 50 20")
+    await handler.handle("yes")
+
+    assert handler.settings.sim_trailing_activate_pips == 50
+    assert handler.settings.sim_trailing_distance_pips == 20
+    text = handler.env_path.read_text()
+    assert "SIM_TRAILING_ACTIVATE_PIPS=50" in text
+    assert "SIM_TRAILING_DISTANCE_PIPS=20" in text
