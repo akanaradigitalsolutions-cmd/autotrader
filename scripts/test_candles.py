@@ -12,6 +12,12 @@ shares the MT5 terminal):
 """
 
 import asyncio
+import os
+import sys
+
+# Make the project root importable so `bot...` resolves when this script is run
+# directly (python scripts\test_candles.py), not just as a module.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from bot.config import load_settings
 
