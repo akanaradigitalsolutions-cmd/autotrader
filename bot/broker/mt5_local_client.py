@@ -13,6 +13,18 @@ logger = logging.getLogger(__name__)
 DEVIATION_POINTS = 20
 MAGIC_NUMBER = 20260701
 
+# Timeframe name -> MT5 constant (getattr fallbacks keep it importable in tests
+# where the real MetaTrader5 package / constants may be stubbed).
+_TF_MAP = {
+    "M1": getattr(mt5, "TIMEFRAME_M1", 1),
+    "M5": getattr(mt5, "TIMEFRAME_M5", 5),
+    "M15": getattr(mt5, "TIMEFRAME_M15", 15),
+    "M30": getattr(mt5, "TIMEFRAME_M30", 30),
+    "H1": getattr(mt5, "TIMEFRAME_H1", 16385),
+    "H4": getattr(mt5, "TIMEFRAME_H4", 16388),
+    "D1": getattr(mt5, "TIMEFRAME_D1", 16408),
+}
+
 
 class Mt5LocalExecutionClient(ExecutionClient):
     """Executes orders on a locally running MT5 terminal (Windows only).
@@ -102,21 +114,37 @@ class Mt5LocalExecutionClient(ExecutionClient):
 
     @staticmethod
     def _get_closes_sync(symbol: str, timeframe: str, count: int) -> list[float]:
-        tf_map = {
-            "M1": getattr(mt5, "TIMEFRAME_M1", 1),
-            "M5": getattr(mt5, "TIMEFRAME_M5", 5),
-            "M15": getattr(mt5, "TIMEFRAME_M15", 15),
-            "M30": getattr(mt5, "TIMEFRAME_M30", 30),
-            "H1": getattr(mt5, "TIMEFRAME_H1", 16385),
-            "H4": getattr(mt5, "TIMEFRAME_H4", 16388),
-            "D1": getattr(mt5, "TIMEFRAME_D1", 16408),
-        }
-        tf = tf_map.get(timeframe.upper(), tf_map["H1"])
+        tf = _TF_MAP.get(timeframe.upper(), _TF_MAP["H1"])
         mt5.symbol_select(symbol, True)
         rates = mt5.copy_rates_from_pos(symbol, tf, 0, count)
         if rates is None:
             return []
         return [float(r["close"]) for r in rates]
+
+    async def get_candles(
+        self, symbol: str, timeframe: str = "H1", count: int = 50
+    ) -> list[dict]:
+        return await asyncio.to_thread(self._get_candles_sync, symbol, timeframe, count)
+
+    @staticmethod
+    def _get_candles_sync(symbol: str, timeframe: str, count: int) -> list[dict]:
+        tf = _TF_MAP.get(timeframe.upper(), _TF_MAP["H1"])
+        mt5.symbol_select(symbol, True)
+        rates = mt5.copy_rates_from_pos(symbol, tf, 0, count)
+        if rates is None:
+            return []
+        out = []
+        for r in rates:
+            try:
+                out.append({
+                    "t": int(r["time"]),
+                    "o": float(r["open"]), "h": float(r["high"]),
+                    "l": float(r["low"]), "c": float(r["close"]),
+                    "v": int(r["tick_volume"]),
+                })
+            except Exception:
+                continue
+        return out
 
     async def modify_stop_loss(self, position_id: str, stop_loss: float) -> bool:
         return await asyncio.to_thread(self._modify_sl_sync, position_id, stop_loss)

@@ -64,6 +64,8 @@ async def build_status_report(
         else "pending_expiry=off"
     )
     sim = "sim=on" if settings.simulate_skipped_signals else "sim=off"
+    if settings.record_market_data:
+        sim += " rec=on"
     if settings.simulate_only_channels.strip():
         sim += f" sim_only=[{settings.simulate_only_channels.strip()}]"
     if settings.sim_skip_reward_risk_below > 0:

@@ -149,6 +149,16 @@ class Settings(BaseSettings):
     log_file: str = "logs/autotrader.log"
     # CSV journal of every trade (open + close P/L) for the /report command.
     trades_log_file: str = "logs/trades.csv"
+    # Record a multi-timeframe market snapshot (recent candles + the signal's
+    # details + how the bot acted) to a JSONL dataset for every signal, to
+    # build a trading history you can learn from / train a model on later. Each
+    # line joins to its outcome by position id (via the trade journal). Off by
+    # default - it makes extra candle queries per signal. Timeframes are the
+    # ones you watch (M1..H1); candles = how many of each to snapshot.
+    record_market_data: bool = False
+    market_data_file: str = "logs/market_snapshots.jsonl"
+    market_data_timeframes: str = "M1,M5,M15,M30,H1"
+    market_data_candles: int = 50
     # Where the /pause state is persisted, so a pause (e.g. for NFP) survives
     # a bot restart. Kept out of the logs dir so it's easy to find/clear.
     pause_state_file: str = ".pause_state.json"

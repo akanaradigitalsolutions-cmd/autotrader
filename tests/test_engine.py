@@ -51,6 +51,9 @@ class FakeBroker:
     async def get_closes(self, symbol, timeframe="H1", count=100):
         return list(self.closes)
 
+    async def get_candles(self, symbol, timeframe="H1", count=50):
+        return [{"t": 1700000000, "o": 4300.0, "h": 4305.0, "l": 4298.0, "c": 4302.0, "v": 5}]
+
     async def get_pending_orders(self, symbol):
         return []
 
@@ -973,3 +976,45 @@ async def test_apply_setting_updates_live_trailing_monitor():
 
     assert monitor._activate == 80 * 0.1  # live monitor picked up the change
     assert monitor._distance == 20 * 0.1
+
+
+@pytest.mark.asyncio
+async def test_executed_signal_writes_a_market_snapshot(tmp_path):
+    from bot.market_recorder import MarketRecorder
+    broker = FakeBroker(bid=4316, ask=4316.2)
+    settings = make_settings(
+        record_market_data=True,
+        market_data_file=str(tmp_path / "snap.jsonl"),
+        market_data_timeframes="M5,H1",
+        market_data_candles=1,
+    )
+    recorder = MarketRecorder(broker, settings)
+    engine = TradingEngine(settings, SignalParser(), broker, market_recorder=recorder)
+
+    await engine.handle_message(SELL_SIGNAL, source=-100)
+
+    import json
+    lines = (tmp_path / "snap.jsonl").read_text().splitlines()
+    assert len(lines) == 1
+    row = json.loads(lines[0])
+    assert row["action"] == "EXECUTED"
+    assert row["source"] == -100
+    assert len(row["position_ids"]) == len(broker.placed_orders)  # joinable to outcomes
+    assert set(row["candles"].keys()) == {"M5", "H1"}
+
+
+@pytest.mark.asyncio
+async def test_recorder_off_writes_nothing(tmp_path):
+    from bot.market_recorder import MarketRecorder
+    broker = FakeBroker(bid=4316, ask=4316.2)
+    settings = make_settings(
+        record_market_data=False, market_data_file=str(tmp_path / "snap.jsonl")
+    )
+    engine = TradingEngine(
+        settings, SignalParser(), broker,
+        market_recorder=MarketRecorder(broker, settings),
+    )
+
+    await engine.handle_message(SELL_SIGNAL, source=-100)
+
+    assert not (tmp_path / "snap.jsonl").exists()

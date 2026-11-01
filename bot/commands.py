@@ -26,7 +26,8 @@ SET_USAGE = (
     "Entry:  immediate_entry on|off | now_guard 10 | fallback_sl 120 | pending_expiry 60\n"
     "Trail:  trail 60 10  (or trail off)\n"
     "Guards: conflict on|off | breakeven on|off | reentry on|off | require_sl on|off | cancellations on|off\n"
-    "Sim:    sim_skip_rr 1.0 | sim_trail 60 10  (or sim_trail off)"
+    "Sim:    sim_skip_rr 1.0 | sim_trail 60 10  (or sim_trail off)\n"
+    "Data:   record on|off"
 )
 
 USAGE = (
@@ -80,6 +81,7 @@ SET_SPECS = {
     "immediate_entry": _Spec("immediate_entry", "IMMEDIATE_ENTRY", "bool"),
     "cancellations": _Spec("honor_cancellations", "HONOR_CANCELLATIONS", "bool"),
     "trend": _Spec("trend_filter", "TREND_FILTER", "enum", choices=("off", "shadow", "on")),
+    "record": _Spec("record_market_data", "RECORD_MARKET_DATA", "bool"),
 }
 
 

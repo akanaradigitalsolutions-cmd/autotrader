@@ -53,6 +53,14 @@ class ExecutionClient(ABC):
         the trend filter. Real backends override."""
         return []
 
+    async def get_candles(
+        self, symbol: str, timeframe: str = "H1", count: int = 50
+    ) -> list[dict]:
+        """Recent OHLC candles (oldest first) as dicts {t,o,h,l,c,v}. Default
+        empty; backends with candle data override. Used by the market recorder
+        to snapshot the market at each signal for later learning."""
+        return []
+
     async def get_pending_orders(self, symbol: str) -> list[str]:
         """Ids of not-yet-filled pending orders for the symbol. Default empty."""
         return []

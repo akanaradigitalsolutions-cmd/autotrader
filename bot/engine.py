@@ -71,6 +71,7 @@ class TradingEngine:
         journal=None,
         simulator=None,
         pause: Optional[TradePause] = None,
+        market_recorder=None,
     ):
         self.settings = settings
         self.parser = parser
@@ -80,6 +81,7 @@ class TradingEngine:
         self.position_monitor = position_monitor
         self.journal = journal
         self.simulator = simulator
+        self.market_recorder = market_recorder
         # Controls whether NEW trades open; cancellations and monitoring run
         # regardless. Defaults to a file-backed pause so state survives restart.
         self.pause = pause or TradePause(settings.pause_state_file)
@@ -104,6 +106,19 @@ class TradingEngine:
         # (re-)traded if it arrives again within the window.
         self._cancelled: dict[tuple, datetime] = {}
         self._daily_loss = DailyLossGuard(broker, settings.daily_loss_limit_percent)
+
+    async def _record_market(
+        self, signal, action, source=None, reason=None, position_ids=None, rr=None
+    ) -> None:
+        if self.market_recorder is None:
+            return
+        try:
+            await self.market_recorder.record(
+                signal, action, source=source, reason=reason,
+                position_ids=position_ids, rr=rr,
+            )
+        except Exception:
+            logger.exception("Market recorder failed")
 
     def _simulate(self, signal: TradeSignal, source, reason: str, force: bool = False) -> None:
         """Paper-trade a signal the bot chose not to execute.
@@ -279,6 +294,7 @@ class TradingEngine:
                 source, self.last_signal_summary,
             )
             self._simulate(signal, source, "simulate-only channel", force=True)
+            await self._record_market(signal, "SIMULATED", source, "simulate_only", rr=rr)
             return
 
         if signal.stop_loss is None and self.settings.require_stop_loss:
@@ -295,6 +311,7 @@ class TradingEngine:
                 except Exception:
                     logger.exception("Failed to send no-stop-loss alert")
             self._simulate(signal, source, "no stop loss")
+            await self._record_market(signal, "SKIPPED", source, "no_stop_loss", rr=rr)
             return
 
         inconsistency = self._consistency_error(signal)
@@ -311,6 +328,7 @@ class TradingEngine:
                     )
                 except Exception:
                     logger.exception("Failed to send inconsistent-signal alert")
+            await self._record_market(signal, "SKIPPED", source, "inconsistent", rr=rr)
             return
 
         if (
@@ -332,6 +350,7 @@ class TradingEngine:
                 except Exception:
                     logger.exception("Failed to send R:R-filter alert")
             self._simulate(signal, source, "below R:R filter")
+            await self._record_market(signal, "SKIPPED", source, "low_rr", rr=rr)
             return
 
         if rr is not None and rr < self.settings.min_reward_risk:
@@ -364,6 +383,7 @@ class TradingEngine:
                     except Exception:
                         logger.exception("Failed to send trend-filter alert")
                 self._simulate(signal, source, "against trend")
+                await self._record_market(signal, "SKIPPED", source, "trend", rr=rr)
                 return
             # shadow mode: log what it *would* skip, but still trade.
             logger.warning(
@@ -842,6 +862,7 @@ class TradingEngine:
         # trade it" from the channel can close exactly these.
         self._record_opened(signal, placed_ids, source)
         self._journal_opened(signal, placed_ids, source, rr, volume)
+        await self._record_market(signal, "EXECUTED", source, position_ids=placed_ids, rr=rr)
 
         # Only market fills (entry_price is None) are breakeven-managed; a
         # pending order isn't a position yet, so there's no ticket to move.

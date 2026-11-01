@@ -10,6 +10,7 @@ from bot.config import load_settings
 from bot.engine import TradingEngine
 from bot.health import broker_watchdog
 from bot.logging_config import setup_logging
+from bot.market_recorder import MarketRecorder
 from bot.notifier import Alerter
 from bot.position_monitor import PositionMonitor
 from bot.signal_parser import GOLD_PIP_SIZE, SignalParser
@@ -114,6 +115,13 @@ async def run() -> None:
     pause = TradePause(settings.pause_state_file)
     if pause.is_paused():
         logger.warning("Starting with trading PAUSED (%s)", pause.status_text())
+    market_recorder = MarketRecorder(broker, settings)
+    if market_recorder.enabled:
+        logger.warning(
+            "Market data recording ON -> %s (timeframes %s, %d candles each)",
+            settings.market_data_file, settings.market_data_timeframes,
+            settings.market_data_candles,
+        )
     engine = TradingEngine(
         settings, parser, broker,
         notify=lambda text: alerter.alert("trade-failed", text),
@@ -122,6 +130,7 @@ async def run() -> None:
         journal=journal,
         simulator=simulator,
         pause=pause,
+        market_recorder=market_recorder,
     )
 
     start_time = time.monotonic()
