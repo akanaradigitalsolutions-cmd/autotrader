@@ -42,6 +42,14 @@ class Alerter:
             return
         self._mark_sent(key)
 
+    async def send_now(self, text: str) -> None:
+        """Send immediately with NO rate-limiting - for per-event notifications
+        (e.g. a trade just opened) where every message matters."""
+        try:
+            await asyncio.wait_for(self._send(text), timeout=SEND_TIMEOUT_SECONDS)
+        except Exception:
+            logger.exception("Failed to send notification")
+
     def _load(self) -> dict:
         try:
             return json.loads(self._state_file.read_text())

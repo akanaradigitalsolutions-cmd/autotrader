@@ -1038,3 +1038,43 @@ async def test_close_all_setup_guidance_is_not_a_cancellation():
     )
 
     assert broker.closed == []  # position left open - guidance, not a cancel
+
+
+@pytest.mark.asyncio
+async def test_trade_open_sends_a_notification():
+    broker = FakeBroker(bid=4316, ask=4316.2)  # in-zone -> market fill
+    sent = []
+
+    async def trade_notify(text):
+        sent.append(text)
+
+    engine = TradingEngine(
+        make_settings(), SignalParser(), broker, trade_notify=trade_notify
+    )
+
+    await engine.handle_message(SELL_SIGNAL, source=-100)
+
+    assert len(sent) == 1
+    msg = sent[0]
+    assert "Trade OPENED" in msg
+    assert "SELL" in msg
+    assert "Channel: -100" in msg
+    assert "SL:" in msg
+
+
+@pytest.mark.asyncio
+async def test_no_notification_when_nothing_opens():
+    # Price at the stop -> market-entry safety guard skips, nothing opens.
+    broker = FakeBroker(bid=4325.9, ask=4326.0)
+    sent = []
+
+    async def trade_notify(text):
+        sent.append(text)
+
+    engine = TradingEngine(
+        make_settings(), SignalParser(), broker, trade_notify=trade_notify
+    )
+    # SELL_SIGNAL has sl 4325.9; price at the stop should block the entry.
+    await engine.handle_message(SELL_SIGNAL, source=-100)
+
+    assert sent == []  # no trade opened -> no notification

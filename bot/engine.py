@@ -75,6 +75,7 @@ class TradingEngine:
         simulator=None,
         pause: Optional[TradePause] = None,
         market_recorder=None,
+        trade_notify: Optional[Callable[[str], Awaitable[None]]] = None,
     ):
         self.settings = settings
         self.parser = parser
@@ -85,6 +86,9 @@ class TradingEngine:
         self.journal = journal
         self.simulator = simulator
         self.market_recorder = market_recorder
+        # Sent (un-rate-limited) when a trade actually opens, so you get a
+        # Telegram ping for every live execution.
+        self.trade_notify = trade_notify
         # Controls whether NEW trades open; cancellations and monitoring run
         # regardless. Defaults to a file-backed pause so state survives restart.
         self.pause = pause or TradePause(settings.pause_state_file)
@@ -122,6 +126,32 @@ class TradingEngine:
             )
         except Exception:
             logger.exception("Market recorder failed")
+
+    async def _notify_trade_opened(
+        self, signal, placed_ids, order_kind, volume, rr, source
+    ) -> None:
+        if self.trade_notify is None or not placed_ids:
+            return
+        low, high = signal.entry_low, signal.entry_high
+        if low is not None and high is not None and low != high:
+            entry_txt = f"{low:g}-{high:g}"
+        elif low is not None:
+            entry_txt = f"{low:g}"
+        else:
+            entry_txt = "market"
+        tps = "/".join(f"{tp:g}" for tp in signal.take_profits) if signal.take_profits else "—"
+        rr_txt = f"{rr:.2f}" if rr is not None else "n/a"
+        src = f"\nChannel: {source}" if source is not None else ""
+        msg = (
+            f"✅ Trade OPENED: {signal.direction.value} {self.settings.broker_symbol}\n"
+            f"{len(placed_ids)} position(s) @ {volume} lot — {order_kind}\n"
+            f"Entry: {entry_txt}   SL: {signal.stop_loss}\n"
+            f"TP: {tps}   R:R: {rr_txt}{src}"
+        )
+        try:
+            await self.trade_notify(msg)
+        except Exception:
+            logger.exception("Failed to send trade-open notification")
 
     def _simulate(self, signal: TradeSignal, source, reason: str, force: bool = False) -> None:
         """Paper-trade a signal the bot chose not to execute.
@@ -866,6 +896,7 @@ class TradingEngine:
         self._record_opened(signal, placed_ids, source)
         self._journal_opened(signal, placed_ids, source, rr, volume)
         await self._record_market(signal, "EXECUTED", source, position_ids=placed_ids, rr=rr)
+        await self._notify_trade_opened(signal, placed_ids, order_kind, volume, rr, source)
 
         # Only market fills (entry_price is None) are breakeven-managed; a
         # pending order isn't a position yet, so there's no ticket to move.

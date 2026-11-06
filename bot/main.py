@@ -131,6 +131,7 @@ async def run() -> None:
         simulator=simulator,
         pause=pause,
         market_recorder=market_recorder,
+        trade_notify=alerter.send_now,
     )
 
     start_time = time.monotonic()
