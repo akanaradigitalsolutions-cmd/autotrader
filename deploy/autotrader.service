@@ -1,0 +1,29 @@
+# Reference systemd unit for running the bot 24/7 on a Linux VPS.
+#
+# Install:
+#   sudo cp deploy/autotrader.service /etc/systemd/system/autotrader.service
+#   (adjust User/WorkingDirectory/ExecStart paths for your machine first)
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now autotrader
+#
+# Check:  sudo systemctl status autotrader
+# Logs:   sudo journalctl -u autotrader -f
+
+[Unit]
+Description=Autotrader - Telegram to MT5 signal bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/autotrader
+ExecStart=/home/ubuntu/autotrader/.venv/bin/python -m bot.main
+# Restart=always, NOT on-failure: however the process ended, the bot is no
+# longer trading, and it must never stay down silently. The bot also exits
+# non-zero on every failure path, but always is the belt-and-braces option.
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,9 +1,11 @@
+import asyncio
 import logging
 from typing import Optional
 
 from metaapi_cloud_sdk import MetaApi
 
-from bot.models import Direction, ExecutionResult, TradeSignal
+from bot.aio import externally_cancelled
+from bot.models import Direction, ExecutionResult, OpenPosition, TradeSignal
 from bot.broker.base import ExecutionClient
 
 logger = logging.getLogger(__name__)
@@ -24,18 +26,42 @@ class MetaApiExecutionClient(ExecutionClient):
     def __init__(self, token: str, account_id: str):
         self._api = MetaApi(token)
         self._account_id = account_id
+        self._account = None
         self._connection = None
 
     async def connect(self) -> None:
-        account = await self._api.metatrader_account_api.get_account(self._account_id)
-        if account.state not in ("DEPLOYED", "DEPLOYING"):
-            await account.deploy()
-        await account.wait_connected()
+        self._account = await self._api.metatrader_account_api.get_account(self._account_id)
+        if self._account.state not in ("DEPLOYED", "DEPLOYING"):
+            await self._account.deploy()
+        await self._account.wait_connected()
 
-        self._connection = account.get_rpc_connection()
+        self._connection = self._account.get_rpc_connection()
         await self._connection.connect()
         await self._connection.wait_synchronized()
         logger.info("Connected to MetaApi account %s", self._account_id)
+
+    async def reconnect(self) -> None:
+        """Tear down and rebuild the RPC connection.
+
+        The websocket to MetaApi drops intermittently; retrying a failed
+        call on the same dead connection just fails again, so the engine
+        calls this between attempts.
+        """
+        logger.warning("Rebuilding MetaApi RPC connection")
+        try:
+            if self._connection is not None:
+                await self._connection.close()
+        except Exception:
+            logger.exception("Closing the dead RPC connection failed (continuing)")
+
+        if self._account is None:
+            self._account = await self._api.metatrader_account_api.get_account(
+                self._account_id
+            )
+        self._connection = self._account.get_rpc_connection()
+        await self._connection.connect()
+        await self._connection.wait_synchronized()
+        logger.info("MetaApi RPC connection rebuilt")
 
     async def disconnect(self) -> None:
         if self._connection:
@@ -44,6 +70,67 @@ class MetaApiExecutionClient(ExecutionClient):
     async def count_open_positions(self, symbol: str) -> int:
         positions = await self._connection.get_positions()
         return sum(1 for p in positions if p.get("symbol") == symbol)
+
+    async def get_positions(self, symbol: str) -> list[OpenPosition]:
+        positions = await self._connection.get_positions()
+        result = []
+        for p in positions:
+            if p.get("symbol") != symbol:
+                continue
+            direction = (
+                Direction.BUY if p.get("type") == "POSITION_TYPE_BUY" else Direction.SELL
+            )
+            result.append(
+                OpenPosition(
+                    id=str(p.get("id")),
+                    symbol=p.get("symbol"),
+                    direction=direction,
+                    volume=float(p.get("volume", 0) or 0),
+                    open_price=float(p.get("openPrice", 0) or 0),
+                    stop_loss=p.get("stopLoss"),
+                    take_profit=p.get("takeProfit"),
+                    profit=float(p.get("profit", 0) or 0),
+                )
+            )
+        return result
+
+    async def get_account_balance(self) -> Optional[float]:
+        info = await self._connection.get_account_information()
+        return float(info.get("balance")) if info else None
+
+    async def modify_stop_loss(self, position_id: str, stop_loss: float) -> bool:
+        try:
+            await self._connection.modify_position(
+                position_id, stop_loss=stop_loss
+            )
+            return True
+        except Exception:
+            logger.exception("Modify SL failed for %s", position_id)
+            return False
+
+    async def close_position(self, position_id: str) -> bool:
+        try:
+            await self._connection.close_position(position_id)
+            return True
+        except Exception:
+            logger.exception("Close failed for %s", position_id)
+            return False
+
+    async def get_pending_orders(self, symbol: str) -> list[str]:
+        try:
+            orders = await self._connection.get_orders()
+        except Exception:
+            logger.exception("Could not read pending orders")
+            return []
+        return [str(o.get("id")) for o in orders if o.get("symbol") == symbol]
+
+    async def cancel_order(self, order_id: str) -> bool:
+        try:
+            await self._connection.cancel_order(order_id)
+            return True
+        except Exception:
+            logger.exception("Cancel pending order %s failed", order_id)
+            return False
 
     async def get_current_price(self, symbol: str) -> tuple[float, float]:
         price = await self._connection.get_symbol_price(symbol)
@@ -86,6 +173,19 @@ class MetaApiExecutionClient(ExecutionClient):
                 success=True,
                 message="Order placed",
                 order_id=order_id,
+                signal=signal,
+                dry_run=False,
+            )
+        except asyncio.CancelledError:
+            if externally_cancelled():
+                raise
+            # The SDK cancelled its own request future (socket reconnect).
+            # CancelledError bypasses `except Exception`, so without this the
+            # whole calling task dies silently mid-order.
+            logger.error("Order call was cancelled by the MetaApi client (connection reset)")
+            return ExecutionResult(
+                success=False,
+                message="cancelled by MetaApi client (connection reset)",
                 signal=signal,
                 dry_run=False,
             )

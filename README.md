@@ -34,10 +34,10 @@ Python SDK, so this bot can run anywhere - your Mac, this dev container, or
 a plain Linux VPS - now and later, without ever installing MT5 or Wine.
 
 If you later decide to self-host instead (e.g. broker not supported by
-MetaApi), the only piece that changes is `bot/broker/metaapi_client.py` -
-swap it for an `ExecutionClient` implementation that talks to a
-self-hosted MT5 terminal + EA bridge on a Windows VPS. Everything else
-(Telegram listener, parser, engine) is unaffected.
+MetaApi, or the cloud connection proves unreliable), set
+`BROKER_BACKEND=mt5local` and run the bot on a Windows VPS next to a
+local MT5 terminal - see `deploy/WINDOWS_VPS.md`. Everything else
+(Telegram listener, parser, engine, watchdogs, alerts) is unaffected.
 
 ## Setup
 
@@ -94,6 +94,38 @@ Since execution goes through MetaApi rather than a local terminal, "deploy"
 just means running this same Python process somewhere that stays online -
 a small Linux VPS is enough. You do not need a Windows VPS unless you
 switch away from MetaApi to a self-hosted terminal.
+
+## Running 24/7 (systemd)
+
+Use the unit file in `deploy/autotrader.service` (install instructions are
+in its comments). Two things matter for reliability:
+
+- **`Restart=always`** - however the process ends, the bot isn't trading,
+  so systemd must always bring it back. `on-failure` is not enough: a clean
+  Telegram disconnect used to exit with code 0 and leave the bot down
+  silently.
+- The listener runs a **connection watchdog**: every 60s it makes a real
+  Telegram API call, because Telethon can sit on a dead connection without
+  ever raising. After 3 consecutive failures the process exits non-zero and
+  systemd restarts it with a fresh connection. A
+  `Heartbeat: Telegram connection healthy` line is logged every ~30 minutes
+  as proof of life - if journalctl shows no heartbeat for an hour, something
+  is wrong.
+- The same watchdog runs **catch_up() every 5 minutes**: the API round-trip
+  above can succeed while the separate update stream that pushes new
+  messages is dead (seen in production - green heartbeats, but no signals
+  or commands delivered for hours). catch_up() actively fetches whatever
+  was missed and re-dispatches it; if it keeps failing, the bot restarts.
+  The stale-message guard still drops anything recovered that is older
+  than 10 minutes, so late signals are never traded.
+- A **broker watchdog** (`bot/health.py`) does the same for the MetaApi
+  side: every 2 minutes it fetches the broker symbol's price; after 3
+  consecutive failures the process exits so systemd restarts it and the
+  broker connection is rebuilt. Without this the bot can look alive
+  (Telegram still replies) while every order silently times out. It logs
+  `Heartbeat: broker connection healthy` every ~30 minutes. The startup
+  connection to MetaApi is also bounded (180s) so a degraded MetaApi can't
+  leave the bot hung before it ever starts listening.
 
 ## Disclaimer
 
