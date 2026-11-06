@@ -51,7 +51,10 @@ CANCEL_PATTERN = re.compile(
     # or a breakeven instruction ("move SL to entry") never matches.
     r"|closed?\s+(at|on)\s+entry"
     r"|closed?\s+(at|on)\s+(be\b|break\s*even)"
-    r"|close\s+(the\s+|this\s+)?(trade|position|order|deal|all|everything)"
+    # Only an explicit object (trade/position/order/deal) - NOT a bare "close
+    # all"/"close everything", which channels use for take-profit guidance
+    # ("reach first entry, close all this setup"), not to cancel a signal.
+    r"|close\s+(the\s+|this\s+)?(trade|position|order|deal)"
     r"|exit\s+(the\s+)?(trade|position|now|at\s+entry)",
     re.IGNORECASE,
 )

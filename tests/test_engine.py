@@ -1018,3 +1018,23 @@ async def test_recorder_off_writes_nothing(tmp_path):
     await engine.handle_message(SELL_SIGNAL, source=-100)
 
     assert not (tmp_path / "snap.jsonl").exists()
+
+
+@pytest.mark.asyncio
+async def test_close_all_setup_guidance_is_not_a_cancellation():
+    # A channel's take-profit guidance ("reach first entry close all this
+    # setup") must NOT be read as a cancel and must not close the trade.
+    broker = FakeBroker(bid=4061, ask=4061)  # inside the 4056-4066 buy zone
+    engine = TradingEngine(make_settings(), SignalParser(), broker)
+
+    await engine.handle_message(
+        "Gold Buy Now @ 4066-4056\nStoploss: 4053\nTake profits: 4076",
+        source=-100, message_id=1,
+    )
+    assert len(broker.placed_orders) >= 1
+
+    await engine.handle_message(
+        "Reach first entry close all this setup", source=-100, message_id=2,
+    )
+
+    assert broker.closed == []  # position left open - guidance, not a cancel
